@@ -1,0 +1,187 @@
+// ==================== ГЛАВНОЕ МЕНЮ ====================
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  
+  // Создаём главное меню
+  var menu = ui.createMenu('📊 УПРАВЛЕНИЕ ДАННЫМИ');
+  
+  // ========== 1. НАСТРОЙКИ ==========
+  menu.addSubMenu(ui.createMenu('⚙️ Настройки')
+    .addItem('📏 Установить ширину колонок', 'setColumnWidths')
+  );
+  
+  // ========== 2. МОЙСКЛАД (MS) ==========
+  menu.addSubMenu(ui.createMenu('📦 МойСклад')
+    .addItem('🏷️ Выгрузить карточки товаров (MS_Cards)', 'exportMSCards')
+    .addItem('📊 Выгрузить остатки (MS Export)', 'updateMSStocks')
+    .addSeparator()
+    .addItem('🔧 Выгрузить структуру комплектов', 'exportMSBundlesStructure')
+    .addItem('🧮 Рассчитать остатки комплектов', 'calculateBundleStocks')
+  );
+  
+  // ========== 3. WILDBERRIES ==========
+  menu.addSubMenu(ui.createMenu('🟣 Wildberries')
+    .addItem('🏷️ Выгрузить карточки (WB_Cards)', 'exportWbCards')
+    .addItem('📊 Выгрузить остатки и цены (WB Export)', 'updateWbStocks')
+  );
+  
+  // ========== 4. OZON ==========
+  menu.addSubMenu(ui.createMenu('🟢 Ozon')
+    .addItem('📊 Выгрузить товары (Ozon Export)', 'exportOzonProducts')
+  );
+  
+  // ========== 5. ЯНДЕКС МАРКЕТ ==========
+  menu.addSubMenu(ui.createMenu('🟡 Яндекс Маркет')
+    .addItem('📊 Выгрузить товары (YM Export)', 'exportYandexMarket')
+  );
+  
+  // ========== 6. HUCKSTER (Цены конкурентов) ==========
+  menu.addSubMenu(ui.createMenu('📈 Huckster (цены)')
+    .addItem('📊 Huckster Export (основной)', 'exportHucksterExport')
+    .addItem('📊 Huckster Export РРЦ', 'exportHucksterExportRRC')
+    .addSeparator()
+    .addItem('🚀 Запустить оба листа сразу', 'runAllExports')
+  );
+  
+  // ========== 7. КОПИРОВАНИЕ В "ФАЙЛ ДЛЯ РАБОТЫ" ==========
+  menu.addSubMenu(ui.createMenu('📋 Копирование в "Файл для работы"')
+    .addItem('📦 Скопировать MS Export', 'copyAllColumnsToFileForWork')
+    .addSeparator()
+    .addItem('📈 Скопировать Huckster Export (Ozon/WB/YM)', 'copyColumnsFromHucksterAdvanced')
+    .addItem('📈 Скопировать Huckster Export РРЦ', 'copyFrom_Huckster_Export_RRC')
+  );
+  
+  // ========== 8. СИНХРОНИЗАЦИЯ ДАННЫХ ==========
+  menu.addSubMenu(ui.createMenu('🔄 Синхронизация')
+    .addItem('🟢 Синхронизировать Ozon → Файл для работы', 'syncOzonDirect')
+    .addItem('🟣 Синхронизировать WB → Файл для работы', 'syncWBDirect')
+    .addItem('🟡 Синхронизировать YM → Файл для работы', 'syncYMDirect')
+    .addSeparator()
+    .addItem('📊 Синхронизировать Huckster (S,T,U)', 'syncSTUbyMatch')
+    .addItem('📊 Синхронизировать Huckster РРЦ (V,W,X)', 'syncVWXbyMatch')
+  );
+  
+  // ========== 9. ПРОВЕРКИ И АНАЛИЗ ==========
+  menu.addSubMenu(ui.createMenu('✅ Проверки и анализ')
+    .addItem('🔍 Проверить несоответствия НДС', 'highlightVATMismatch')
+    .addItem('📏 Проверить несоответствия габаритов', 'highlightDimensionMismatch')
+  );
+  
+  // ========== 10. ОЧИСТКА ДАННЫХ ==========
+  menu.addSubMenu(ui.createMenu('🧹 Очистка данных')
+    .addItem('🗑️ Удалить данные по маркерам', 'deleteAddedDataByHeaders')
+    .addItem('🎨 Очистить фон от колонки T до конца', 'clearBackgroundFromColumnT')
+    .addItem('🎨 Удалить условное форматирование', 'removeAllConditionalFormatting')
+    .addSeparator()
+    .addItem('🔄 Полная очистка (данные + фон + условное)', 'cleanAllAddedData')
+    .addItem('🎨 Очистить фон во всех ячейках', 'clearAllBackgrounds')
+    .addSeparator()
+    .addItem('⚠️ ПОЛНЫЙ СБРОС ЛИСТА', 'resetSheet')
+  );
+  
+  menu.addToUi();
+  
+  // ========== БЫСТРОЕ МЕНЮ ==========
+  var quickMenu = ui.createMenu('⚡ БЫСТРЫЙ СТАРТ');
+  quickMenu.addItem('🔄 ПОЛНАЯ СИНХРОНИЗАЦИЯ (все маркеты)', 'runFullSync');
+  quickMenu.addSeparator();
+  quickMenu.addItem('🚀 ВСЕ ЭКСПОРТЫ (MS + Ozon + WB + YM)', 'runFullExport');
+  quickMenu.addToUi();
+}
+
+// ==================== ПОЛНАЯ СИНХРОНИЗАЦИЯ ====================
+function runFullSync() {
+  var ui = SpreadsheetApp.getUi();
+  
+  var result = ui.alert(
+    '🔄 Полная синхронизация',
+    'Будут выполнены:\n' +
+    '1. Копирование MS Export → Файл для работы\n' +
+    '2. Копирование Huckster Export → Файл для работы\n' +
+    '3. Копирование Huckster РРЦ → Файл для работы\n' +
+    '4. Синхронизация Ozon → Файл для работы\n' +
+    '5. Синхронизация WB → Файл для работы\n' +
+    '6. Синхронизация YM → Файл для работы\n' +
+    '7. Синхронизация Huckster (S,T,U)\n' +
+    '8. Синхронизация Huckster РРЦ (V,W,X)\n' +
+    '9. Проверка НДС\n' +
+    '10. Проверка габаритов\n\n' +
+    '11. Выравнивание колонок\n\n' +
+    '⏱️ Время выполнения: ~2-3 минуты\n\n' +
+    'Продолжить?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (result === ui.Button.YES) {
+    ui.alert('🔄 Выполняется синхронизация...', 'Следите за логами', ui.ButtonSet.OK);
+    
+    try {
+      clearWorkSheet();
+      copyAllColumnsToFileForWork();
+      copyColumnsFromHucksterAdvanced();
+      copyFrom_Huckster_Export_RRC();
+      syncOzonDirect();
+      syncWBDirect();
+      syncYMDirect();
+      syncSTUbyMatch();
+      syncVWXbyMatch();
+      highlightVATMismatch();
+      highlightDimensionMismatch();
+      setColumnWidths(); // Добавили выравнивание колонок
+      
+      ui.alert('✅ ГОТОВО!', 'Все данные синхронизированы', ui.ButtonSet.OK);
+    } catch(e) {
+      ui.alert('❌ Ошибка', e.toString(), ui.ButtonSet.OK);
+    }
+  }
+}
+
+// ==================== ВСЕ ЭКСПОРТЫ ====================
+function runFullExport() {
+  var ui = SpreadsheetApp.getUi();
+  
+  var result = ui.alert(
+    '🚀 Полный экспорт данных',
+    'Будут выполнены:\n' +
+    '1. МойСклад: карточки + остатки\n' +
+    '2. Wildberries: карточки + остатки\n' +
+    '3. Ozon: товары\n' +
+    '4. Яндекс Маркет: товары\n' +
+    '5. Huckster: оба листа\n' +
+    '6. Структура комплектов\n\n' +
+    '⏱️ Время выполнения: ~5-10 минут\n\n' +
+    'Продолжить?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (result === ui.Button.YES) {
+    ui.alert('🔄 Выполняется экспорт...', 'Следите за логами внизу', ui.ButtonSet.OK);
+    
+    try {
+
+      exportMSCards();
+      updateMSStocks();
+      exportMSBundlesStructure();
+      calculateBundleStocks();
+      
+      runAllExports(); // Huckster оба листа
+
+      exportOzonProducts();
+
+      exportWbCards();
+      updateWbStocks();
+
+      exportYandexMarket();
+           
+      ui.alert('✅ ГОТОВО!', 'Все экспорты завершены успешно', ui.ButtonSet.OK);
+    } catch(e) {
+      ui.alert('❌ Ошибка', e.toString(), ui.ButtonSet.OK);
+    }
+  }
+}
+
+// ==================== ОБНОВЛЕНИЕ МЕНЮ (для отладки) ====================
+function refreshMenu() {
+  onOpen();
+  SpreadsheetApp.getUi().alert('✅ Меню обновлено! Перезагрузите Google Sheets, если меню не появилось.');
+}
