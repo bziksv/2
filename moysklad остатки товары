@@ -1,1 +1,253 @@
+// updateMSStocks.gs
+// ⚠️ MS_TOKEN берётся из config_ms.gs или Свойств скрипта
 
+function updateMSStocks() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("MS Export");
+  if (!sheet) sheet = ss.insertSheet("MS Export");
+  else sheet.clearContents();
+
+  const timestamp = Utilities.formatDate(new Date(), "Europe/Moscow", "dd.MM.yyyy HH:mm");
+  Logger.log(`🕐 [MS Stocks] Обновление: ${timestamp}`);
+
+  // Загружаем остатки (только товары)
+  Logger.log("🔵 [MS Stocks] Загрузка остатков товаров...");
+  const stockMap = fetchStocksOnly();
+  Logger.log(`📦 Загружены остатки для ${stockMap.size} позиций`);
+
+  // Получаем карточки из листа MS_Cards
+  const cardsSheet = ss.getSheetByName("MS_Cards");
+  if (!cardsSheet) {
+    Logger.log("❌ Лист MS_Cards не найден");
+    sheet.getRange("A1").setValue("❌ Ошибка: лист MS_Cards не найден");
+    return;
+  }
+
+  const cardsData = cardsSheet.getDataRange().getValues();
+  const headers = cardsData[0];
+  
+  const idx = {};
+  headers.forEach((h, i) => { 
+    idx[h] = i; 
+  });
+  
+  // Проверяем наличие колонок
+  const hasManager = idx["manager"] !== undefined;
+  const hasContentManager = idx["contentManager"] !== undefined;  // 👈 НОВОЕ
+  
+  if (hasManager) Logger.log(`📌 Найдена колонка "manager" (колонка ${idx["manager"] + 1})`);
+  if (hasContentManager) Logger.log(`📌 Найдена колонка "contentManager" (колонка ${idx["contentManager"] + 1})`);  // 👈 НОВОЕ
+  
+  Logger.log(`📋 Найдено карточек: ${cardsData.length - 1}`);
+
+  // Формируем массив данных для сортировки
+  const dataRows = [];
+  
+  for (let i = 1; i < cardsData.length; i++) {
+    const row = cardsData[i];
+    
+    // Получаем код
+    let codeValue = row[idx["code"]];
+    if (codeValue instanceof Date) {
+      const year = codeValue.getFullYear();
+      const month = codeValue.getMonth() + 1;
+      codeValue = `${year}-${month.toString().padStart(2, '0')}`;
+    }
+    const searchCode = String(codeValue).trim().toUpperCase();
+    
+    // Получаем поставщика
+    let supplier = "";
+    if (idx["supplier"] !== undefined) {
+      supplier = row[idx["supplier"]];
+      if (supplier !== undefined && supplier !== null) {
+        supplier = String(supplier);
+      } else {
+        supplier = "";
+      }
+    }
+    
+    // Получаем менеджера
+    let manager = "";
+    if (hasManager && idx["manager"] !== undefined) {
+      manager = row[idx["manager"]];
+      if (manager !== undefined && manager !== null) {
+        manager = String(manager);
+      } else {
+        manager = "";
+      }
+    }
+    
+    // 👈 Ответственный контент-менеджер (НОВОЕ)
+    let contentManager = "";
+    if (hasContentManager && idx["contentManager"] !== undefined) {
+      contentManager = row[idx["contentManager"]];
+      if (contentManager !== undefined && contentManager !== null) {
+        contentManager = String(contentManager);
+      } else {
+        contentManager = "";
+      }
+    }
+    
+    const stockInfo = stockMap.get(searchCode) || { 
+      stock: 0, available: 0, reserve: 0, inTransit: 0, 
+      stockDays: "", price: "", salePrice: "" 
+    };
+    
+    const priceCommentIdx = idx["priceComment"];
+    let priceComment = "";
+    if (priceCommentIdx !== undefined && priceCommentIdx !== -1) {
+      priceComment = row[priceCommentIdx] || "";
+    }
+
+    // Сохраняем строку данных вместе с кодом для сортировки
+    dataRows.push({
+      code: codeValue,
+      sortKey: String(codeValue).toUpperCase(),
+      row: [
+        codeValue,
+        row[idx["name"]] || "",
+        manager,              // 👈 Менеджер (индекс 2)
+        contentManager,       // 👈 НОВОЕ: Контент-менеджер (индекс 3)
+        row[idx["type"]] || "",
+        row[idx["stockPosition"]] || "",
+        row[idx["noLongerCooperation"]] || "",
+        stockInfo.stock || 0,
+        stockInfo.stockDays || "",
+        priceComment,
+        row[idx["vat"]] || "",
+        row[idx["vatOnProduct"]] || "",
+        stockInfo.salePrice || row[idx["salePrice"]] || "",
+        supplier,
+        row[idx["supplier2"]] || "",
+        row[idx["automationPrice"]] || "",
+        row[idx["packingStandard"]] || "",
+        row[idx["packingOwnBox"]] || "",
+        row[idx["packingWeight"]] || "",
+        timestamp
+      ]
+    });
+  }
+  
+  // СОРТИРОВКА по коду товара
+  dataRows.sort((a, b) => {
+    if (a.sortKey < b.sortKey) return -1;
+    if (a.sortKey > b.sortKey) return 1;
+    return 0;
+  });
+  
+  // Формируем итоговую таблицу (с колонкой Контент-менеджер)
+  const output = [[
+    "Код товара", "Наименование товара", "Менеджер", "Контент-менеджер",  // 👈 ДОБАВЛЕНО
+    "Тип", "Складская позиция", "Перестали сотрудничать / Не производится (дет.в комментах)", 
+    "Остаток", "Дней на складе", "Проработка цены / коммент",
+    "НДС", "НДС на товаре или комплекте", "Закупочная цена",
+    "Поставщик", "Поставщик 2", "Автоматизация цены",
+    "!-Упаковка товара для склада (стандартные коробки)", "!-Упаковка товара, который отправляется в своей коробке (Д*Ш*В) в см", "!-Вес товара с учетом коробки/пакета", "Обновлено"
+  ]];
+  
+  for (const item of dataRows) {
+    output.push(item.row);
+  }
+  
+  // Статистика
+  let supplierCount = dataRows.filter(r => r.row[13] && r.row[13] !== "").length;  // 👈 индекс сдвинулся на +1
+  let priceCommentCount = dataRows.filter(r => r.row[9] && r.row[9] !== "").length;  // 👈 индекс сдвинулся на +1
+  let stockDaysCount = dataRows.filter(r => r.row[8] && r.row[8] !== "").length;  // 👈 индекс сдвинулся на +1
+  let foundCount = dataRows.filter(r => r.row[7] && r.row[7] !== "").length;  // 👈 индекс сдвинулся на +1
+  
+  Logger.log(`📊 Статистика:`);
+  Logger.log(`  - Всего записей: ${dataRows.length}`);
+  Logger.log(`  - Заполнено "Поставщик": ${supplierCount}`);
+  Logger.log(`  - Заполнено "Проработка цены": ${priceCommentCount}`);
+  Logger.log(`  - Заполнено "Дней на складе": ${stockDaysCount}`);
+  Logger.log(`  - Товаров с остатками > 0: ${foundCount}`);
+
+  // Запись и форматирование
+  sheet.getRange(1, 1, output.length, output[0].length).setValues(output);
+  sheet.getRange(1, 1, 1, output[0].length).setFontWeight("bold").setBackground("#f1f3f4");
+  sheet.setFrozenRows(1);
+
+  if (output.length > 1) {
+    sheet.getRange(2, 1, output.length - 1, 1).setNumberFormat("@");
+    sheet.getRange(2, 7, output.length - 1, 1).setNumberFormat("0");  // 👈 Остаток (сдвинулся на +1)
+    sheet.getRange(2, 8, output.length - 1, 1).setNumberFormat("0");  // 👈 Дней на складе (сдвинулся на +1)
+    sheet.getRange(2, 12, output.length - 1, 1).setNumberFormat("#,##0.00 \"₽\""); // 👈 Закупочная цена (сдвинулась на +1)
+  }
+
+  // 👈 ОБНОВЛЕННЫЕ ШИРИНЫ (добавлена колонка контент-менеджера)
+  const widths = [120, 300, 150, 150, 80, 80, 80, 80, 80, 200, 80, 80, 100, 150, 150, 150, 150, 150, 150, 100];
+  widths.forEach((w, i) => sheet.setColumnWidth(i + 1, w));
+
+  Logger.log(`✅ [MS Stocks] Готово! ${output.length - 1} записей, отсортировано по коду`);
+}
+
+// ==================== ФУНКЦИЯ: остатки (только товары) ====================
+// (без изменений — оставляем как есть)
+function fetchStocksOnly() {
+  const token = typeof MS_TOKEN !== "undefined" ? MS_TOKEN : PropertiesService.getScriptProperties().getProperty("MS_TOKEN");
+  if (!token) throw new Error("MS_TOKEN не найден!");
+  
+  const baseUrl = "https://api.moysklad.ru/api/remap/1.2";
+  const headers = { "Authorization": `Bearer ${token}` };
+  
+  const stockMap = new Map();
+  
+  Logger.log("📦 Получение остатков товаров...");
+  let offset = 0;
+  const limit = 1000;
+  let productsCount = 0;
+  
+  while (true) {
+    const url = `${baseUrl}/report/stock/all?groupBy=variant&limit=${limit}&offset=${offset}`;
+    
+    try {
+      const resp = UrlFetchApp.fetch(url, { method: "get", muteHttpExceptions: true, headers, timeout: 30000 });
+      
+      if (resp.getResponseCode() !== 200) {
+        Logger.log(`❌ Ошибка API ${resp.getResponseCode()}`);
+        break;
+      }
+      
+      const data = JSON.parse(resp.getContentText());
+      const rows = data.rows || [];
+      if (rows.length === 0) break;
+      
+      for (const row of rows) {
+        const code = String(row.code || "").trim().toUpperCase();
+        if (!code) continue;
+        
+        const existing = stockMap.get(code) || { 
+          stock: 0, available: 0, reserve: 0, inTransit: 0, 
+          stockDays: "", price: "", salePrice: "" 
+        };
+        
+        existing.stock += (row.stock || 0);
+        existing.available += (row.quantity || 0);
+        existing.reserve += (row.reserve || 0);
+        existing.inTransit += (row.inTransit || 0);
+        
+        if (row.price) existing.price = (row.price / 100).toFixed(2);
+        if (row.salePrice) existing.salePrice = (row.salePrice / 100).toFixed(2) + " ₽";
+        
+        if (existing.stockDays === "" && row.stockDays !== undefined && row.stockDays !== null) {
+          existing.stockDays = row.stockDays;
+        }
+        
+        stockMap.set(code, existing);
+        productsCount++;
+      }
+      
+      offset += limit;
+      if (rows.length < limit) break;
+      Utilities.sleep(50);
+      
+    } catch (e) {
+      Logger.log(`❌ Сетевая ошибка: ${e.message}`);
+      break;
+    }
+  }
+  Logger.log(`📦 Товаров с остатками: ${productsCount}`);
+  Logger.log(`📦 ИТОГО позиций: ${stockMap.size}`);
+  
+  return stockMap;
+}
