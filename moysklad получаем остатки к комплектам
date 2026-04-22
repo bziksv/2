@@ -1,0 +1,145 @@
+function calculateBundleStocks() {
+  const startTime = new Date();
+  Logger.log("▶️ [Calculate Bundle Stocks] Старт: " + startTime.toLocaleString());
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Получаем структуру комплектов
+  const structureSheet = ss.getSheetByName("MS_Bundles_Structure");
+  if (!structureSheet) {
+    Logger.log("❌ Лист MS_Bundles_Structure не найден. Сначала запустите exportMSBundlesStructure()");
+    return;
+  }
+  
+  // Получаем остатки товаров из MS Export
+  const msExportSheet = ss.getSheetByName("MS Export");
+  if (!msExportSheet) {
+    Logger.log("❌ Лист MS Export не найден");
+    return;
+  }
+  
+  // ========== 1. ЗАГРУЖАЕМ ОСТАТКИ ТОВАРОВ ИЗ MS EXPORT ==========
+  Logger.log("📦 Загружаем остатки товаров из MS Export...");
+  
+  const msData = msExportSheet.getDataRange().getValues();
+  const msHeaders = msData[0];
+  
+  let msCodeIdx = -1;
+  let msTypeIdx = -1;
+  let msStockIdx = -1;
+  
+  for (let i = 0; i < msHeaders.length; i++) {
+    const h = msHeaders[i].toString();
+    if (h === "Код товара") msCodeIdx = i;
+    else if (h === "Тип") msTypeIdx = i;
+    else if (h === "Остаток") msStockIdx = i;
+  }
+  
+  // Создаем карту остатков только для товаров
+  const productStockMap = new Map();
+  for (let i = 1; i < msData.length; i++) {
+    const type = msData[i][msTypeIdx] ? msData[i][msTypeIdx].toString() : "";
+    if (type === "Товар") {
+      const code = String(msData[i][msCodeIdx] || "").trim().toUpperCase();
+      const stock = msData[i][msStockIdx] || 0;
+      if (code) {
+        productStockMap.set(code, stock);
+      }
+    }
+  }
+  Logger.log(`📦 Загружены остатки для ${productStockMap.size} товаров`);
+  
+  // ========== 2. ЗАГРУЖАЕМ СТРУКТУРУ КОМПЛЕКТОВ ==========
+  Logger.log("🔗 Загружаем структуру комплектов...");
+  
+  const structureData = structureSheet.getDataRange().getValues();
+  const structureHeaders = structureData[0];
+  
+  let structBundleCodeIdx = -1;
+  let structComponentCodeIdx = -1;
+  let structQuantityIdx = -1;
+  
+  for (let i = 0; i < structureHeaders.length; i++) {
+    const h = structureHeaders[i].toString();
+    if (h === "Код комплекта") structBundleCodeIdx = i;
+    else if (h === "Код компонента") structComponentCodeIdx = i;
+    else if (h === "Количество в комплекте") structQuantityIdx = i;
+  }
+  
+  // Собираем состав комплектов
+  const bundleComponentsMap = new Map();
+  
+  for (let i = 1; i < structureData.length; i++) {
+    const bundleCode = String(structureData[i][structBundleCodeIdx] || "").trim().toUpperCase();
+    const componentCode = String(structureData[i][structComponentCodeIdx] || "").trim().toUpperCase();
+    const quantity = structureData[i][structQuantityIdx] || 1;
+    
+    if (!bundleCode || !componentCode) continue;
+    
+    if (!bundleComponentsMap.has(bundleCode)) {
+      bundleComponentsMap.set(bundleCode, []);
+    }
+    bundleComponentsMap.get(bundleCode).push({ componentCode, quantity });
+  }
+  
+  Logger.log(`📦 Загружена структура для ${bundleComponentsMap.size} комплектов`);
+  
+  // ========== 3. РАССЧИТЫВАЕМ ОСТАТКИ КОМПЛЕКТОВ ==========
+  Logger.log("🧮 Рассчитываем остатки комплектов...");
+  
+  const bundleStockMap = new Map();
+  let calculated = 0;
+  
+  for (const [bundleCode, components] of bundleComponentsMap) {
+    let minStock = Infinity;
+    
+    for (const comp of components) {
+      const productStock = productStockMap.get(comp.componentCode) || 0;
+      const possibleBundles = Math.floor(productStock / comp.quantity);
+      
+      if (possibleBundles < minStock) {
+        minStock = possibleBundles;
+      }
+    }
+    
+    const finalStock = (minStock !== Infinity && minStock > 0) ? minStock : 0;
+    bundleStockMap.set(bundleCode, finalStock);
+    calculated++;
+    
+    if (finalStock > 0 && calculated % 100 === 0) {
+      Logger.log(`   Обработано ${calculated} комплектов...`);
+    }
+  }
+  
+  Logger.log(`📦 Рассчитаны остатки для ${bundleStockMap.size} комплектов`);
+  
+  // ========== 4. ОБНОВЛЯЕМ ОСТАТКИ В MS EXPORT ==========
+  Logger.log("💾 Обновляем остатки комплектов в MS Export...");
+  
+  let updated = 0;
+  
+  for (let i = 1; i < msData.length; i++) {
+    const type = msData[i][msTypeIdx] ? msData[i][msTypeIdx].toString() : "";
+    if (type !== "Комплект") continue;
+    
+    const code = String(msData[i][msCodeIdx] || "").trim().toUpperCase();
+    const newStock = bundleStockMap.get(code);
+    
+    if (newStock !== undefined && msStockIdx !== -1) {
+      const currentStock = msData[i][msStockIdx] || 0;
+      if (currentStock !== newStock) {
+        msExportSheet.getRange(i + 1, msStockIdx + 1).setValue(newStock);
+        updated++;
+        if (updated <= 20) {
+          Logger.log(`   ${code}: ${currentStock} → ${newStock}`);
+        }
+      }
+    }
+  }
+  
+  const elapsed = (new Date() - startTime) / 1000;
+  Logger.log(`✅ [Calculate Bundle Stocks] Готово!`);
+  Logger.log(`   - Рассчитано комплектов: ${bundleStockMap.size}`);
+  Logger.log(`   - Обновлено: ${updated}`);
+  Logger.log(`   - За ${Math.round(elapsed)} сек.`);
+}
