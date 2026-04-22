@@ -1,0 +1,304 @@
+// ms_cards.gs
+// ⚠️ MS_TOKEN берётся из config_ms.gs или Свойств скрипта
+
+const MS_CARDS_SHEET = "MS_Cards";
+const MS_CARDS_LIMIT = 0; // 0 = все товары
+
+function exportMSCards() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(MS_CARDS_SHEET);
+  if (!sheet) sheet = ss.insertSheet(MS_CARDS_SHEET);
+  else sheet.clearContents();
+
+  const startTime = new Date();
+  const timestamp = Utilities.formatDate(new Date(), "Europe/Moscow", "dd.MM.yyyy HH:mm");
+  Logger.log(`🕐 [MS Cards] Обновление: ${timestamp}`);
+  
+  const headers = { "Authorization": `Bearer ${MS_TOKEN}` };
+  const baseUrl = "https://api.moysklad.ru/api/remap/1.2";
+  
+  // 🔹 1. Получаем метаданные (доп. поля)
+  Logger.log("🔵 [MS Cards] 1/4 Получаем метаданные...");
+  
+  const metaResponse = UrlFetchApp.fetch(`${baseUrl}/entity/product/metadata/attributes`, {
+    method: "get", muteHttpExceptions: true, headers: headers
+  });
+  
+  const metaData = JSON.parse(metaResponse.getContentText());
+  const attributesMap = {};
+  
+  const customFields = [
+    "Автоматизация цены",
+    "Складская позиция",
+    "Перестали сотрудничать / Не производится (дет.в комментах)",
+    "Проработка цены / коммент",
+    "!-Упаковка товара для склада (стандартные коробки)",
+    "!-Упаковка товара, который отправляется в своей коробке (Д*Ш*В) в см",
+    "!-Вес товара с учетом коробки/пакета",
+    "НДС на товаре или комплекте",
+    "Поставщик 2",
+    "Менеджер поддерживающий товар",
+    "Ответственный контент-менджер"  // 👈 ДОБАВЛЕНО
+  ];
+  
+  if (metaData.rows && Array.isArray(metaData.rows)) {
+    for (const attr of metaData.rows) {
+      if (customFields.includes(attr.name)) {
+        attributesMap[attr.name] = attr.id;
+        Logger.log(`📌 Найдено поле: ${attr.name} -> ${attr.id}`);
+      }
+    }
+  }
+  
+  const stockPositionId = attributesMap["Складская позиция"];
+  
+  // 🔹 2. Загружаем товары + кэш поставщиков
+  Logger.log("🔵 [MS Cards] 2/4 Загружаем товары...");
+  
+  let filteredItems = [];
+  let offset = 0;
+  const limit = 1000;
+  let totalLoaded = 0;
+  const supplierCache = new Map();
+  
+  const getSupplierName = (supplier) => {
+    if (!supplier) return "";
+    if (supplier.name) return supplier.name;
+    if (!supplier.meta?.href) return "";
+    
+    const href = supplier.meta.href;
+    if (supplierCache.has(href)) {
+      return supplierCache.get(href);
+    }
+    
+    try {
+      const res = UrlFetchApp.fetch(href, {
+        method: "get",
+        muteHttpExceptions: true,
+        headers: headers
+      });
+      if (res.getResponseCode() === 200) {
+        const data = JSON.parse(res.getContentText());
+        const name = data.name || `[ID:${href.split("/").pop()}]`;
+        supplierCache.set(href, name);
+        return name;
+      }
+    } catch(e) {
+      Logger.log(`⚠️ Ошибка получения поставщика: ${e.message}`);
+    }
+    
+    const fallback = `[ID:${href.split("/").pop()}]`;
+    supplierCache.set(href, fallback);
+    return fallback;
+  };
+  
+  while (true) {
+    const elapsed = (new Date() - startTime) / 1000;
+    if (elapsed > 300) {
+      Logger.log(`⚠️ Прошло ${Math.round(elapsed)} сек. Останавливаем загрузку.`);
+      break;
+    }
+    
+    const url = `${baseUrl}/entity/product?limit=${limit}&offset=${offset}&filter=archived=false&expand=supplier`;
+    const response = UrlFetchApp.fetch(url, { method: "get", muteHttpExceptions: true, headers: headers });
+    
+    if (response.getResponseCode() !== 200) break;
+    
+    const data = JSON.parse(response.getContentText());
+    const rows = data.rows || [];
+    if (rows.length === 0) break;
+    
+    for (const item of rows) {
+      let hasStockPosition = false;
+      if (item.attributes && stockPositionId) {
+        for (const attr of item.attributes) {
+          if (attr.id === stockPositionId && attr.value === true) {
+            hasStockPosition = true;
+            break;
+          }
+        }
+      }
+      if (hasStockPosition) filteredItems.push(item);
+    }
+    
+    totalLoaded += rows.length;
+    offset += limit;
+    if (totalLoaded % 10000 === 0) {
+      Logger.log(`📦 Загружено ${totalLoaded}, найдено: ${filteredItems.length}, кэш поставщиков: ${supplierCache.size}`);
+    }
+    Utilities.sleep(100);
+  }
+  
+  // 🔹 3. Загружаем комплекты
+  Logger.log("🔵 [MS Cards] 3/4 Загружаем комплекты...");
+  offset = 0;
+  
+  while (true) {
+    const elapsed = (new Date() - startTime) / 1000;
+    if (elapsed > 300) break;
+    
+    const url = `${baseUrl}/entity/bundle?limit=${limit}&offset=${offset}&filter=archived=false&expand=supplier`;
+    const response = UrlFetchApp.fetch(url, { method: "get", muteHttpExceptions: true, headers: headers });
+    
+    if (response.getResponseCode() !== 200) break;
+    
+    const data = JSON.parse(response.getContentText());
+    const rows = data.rows || [];
+    if (rows.length === 0) break;
+    
+    for (const item of rows) {
+      let hasStockPosition = false;
+      if (item.attributes && stockPositionId) {
+        for (const attr of item.attributes) {
+          if (attr.id === stockPositionId && attr.value === true) {
+            hasStockPosition = true;
+            break;
+          }
+        }
+      }
+      if (hasStockPosition) filteredItems.push(item);
+    }
+    
+    offset += limit;
+    Utilities.sleep(100);
+  }
+  
+  Logger.log(`📦 Всего отфильтровано: ${filteredItems.length}`);
+  
+  if (filteredItems.length === 0) {
+    sheet.getRange("A1").setValue("Нет товаров с отметкой 'Складская позиция'");
+    return;
+  }
+  
+  // 🔹 4. Формируем таблицу
+  Logger.log("🔵 [MS Cards] 4/4 Запись в таблицу...");
+  
+  // Функция для получения значения атрибута
+  const getAttrValue = (item, attrName) => {
+    if (!item.attributes || !Array.isArray(item.attributes)) return "";
+    const attr = item.attributes.find(a => a.id === attributesMap[attrName]);
+    if (!attr) return "";
+    let val = attr.value;
+    if (typeof val === "object" && val !== null && val.name) val = val.name;
+    return val;
+  };
+  
+  // Функция для защиты кода от преобразования в дату
+  const protectCode = (code) => {
+    const codeStr = String(code || "").trim();
+    if (!codeStr) return "";
+    if (/^\d+-\d+$/.test(codeStr) || /^\d+\.\d+$/.test(codeStr)) {
+      return "'" + codeStr;
+    }
+    return codeStr;
+  };
+  
+  const output = [["code", "name", "manager", "contentManager", "uuid", "type", "stockPosition", 
+                   "noLongerCooperation", "priceComment", "vat", "vatOnProduct", "supplier", "supplier2", 
+                   "automationPrice", "packingStandard", "packingOwnBox", "packingWeight", 
+                   "salePrice", "updated"]];  // 👈 добавили "contentManager"
+  
+  for (const item of filteredItems) {
+    // Извлекаем UUID
+    const uuid = item.meta?.href?.split("/").pop() || "";
+    
+    let supplier = "";
+    if (item.supplier) {
+      supplier = getSupplierName(item.supplier);
+    }
+    
+    // Менеджер
+    const manager = getAttrValue(item, "Менеджер поддерживающий товар") || "";
+    
+    // 👈 Ответственный контент-менеджер (НОВОЕ ПОЛЕ)
+    const contentManager = getAttrValue(item, "Ответственный контент-менджер") || "";
+    
+    // Перестали сотрудничать
+    const noLongerCooperationRaw = getAttrValue(item, "Перестали сотрудничать / Не производится (дет.в комментах)");
+    const noLongerCooperation = (noLongerCooperationRaw === true || noLongerCooperationRaw === "true") ? "Да" : "Нет";
+    
+    // Остальные поля
+    const priceComment = getAttrValue(item, "Проработка цены / коммент") || "";
+    const automationPrice = getAttrValue(item, "Автоматизация цены") || "";
+    const supplier2 = getAttrValue(item, "Поставщик 2") || "";
+    const packingStandard = getAttrValue(item, "!-Упаковка товара для склада (стандартные коробки)") || "";
+    const packingOwnBox = getAttrValue(item, "!-Упаковка товара, который отправляется в своей коробке (Д*Ш*В) в см") || "";
+    const packingWeight = getAttrValue(item, "!-Вес товара с учетом коробки/пакета") || "";
+    
+    // ========== ИСПРАВЛЕННАЯ ОБРАБОТКА НДС ==========
+    // НДС на товаре или комплекте (атрибут)
+    const vatOnProductRaw = getAttrValue(item, "НДС на товаре или комплекте");
+    let vatOnProduct = "";
+    
+    if (vatOnProductRaw === 0 || vatOnProductRaw === "0" || vatOnProductRaw === 0) {
+      vatOnProduct = "без НДС";
+    } else if (vatOnProductRaw) {
+      vatOnProduct = String(vatOnProductRaw);
+    } else {
+      vatOnProduct = "";
+    }
+    
+    // Обычный НДС (из карточки товара)
+    let vat = "";
+    if (item.vat === 0 || item.vat === "0") {
+      vat = "без НДС";
+    } else if (item.vat) {
+      vat = String(item.vat).replace("%", "");
+    } else {
+      vat = "";
+    }
+    
+    // Цена продажи
+    let salePrice = "";
+    if (item.salePrices && item.salePrices.length > 0 && item.salePrices[0].value) {
+      salePrice = (parseFloat(item.salePrices[0].value) / 100).toLocaleString('ru-RU') + " ₽";
+    }
+    
+    const type = item.meta?.type === "bundle" ? "Комплект" : "Товар";
+    const protectedCode = protectCode(item.code);
+    
+    output.push([
+      protectedCode,
+      item.name || "",
+      manager,
+      contentManager,  // 👈 НОВОЕ ЗНАЧЕНИЕ
+      uuid,
+      type,
+      "Да",
+      noLongerCooperation,
+      priceComment,
+      vat,
+      vatOnProduct,
+      supplier,
+      supplier2,
+      automationPrice,
+      packingStandard,
+      packingOwnBox,
+      packingWeight,
+      salePrice,
+      timestamp
+    ]);
+  }
+  
+  // Запись в таблицу
+  sheet.getRange(1, 1, output.length, output[0].length).setValues(output);
+  sheet.getRange(1, 1, 1, output[0].length).setFontWeight("bold").setBackground("#f1f3f4");
+  sheet.setFrozenRows(1);
+  
+  // Дополнительная защита для кода
+  if (output.length > 1) {
+    const codeRange = sheet.getRange(2, 1, output.length - 1, 1);
+    codeRange.setNumberFormat("@");
+    const codesWithApostrophe = codeRange.getValues();
+    const cleanCodes = codesWithApostrophe.map(row => [row[0].toString().replace(/^'/, '')]);
+    codeRange.setValues(cleanCodes);
+  }
+  
+  // Автонастройка ширины
+  for (let i = 1; i <= output[0].length; i++) {
+    sheet.autoResizeColumn(i);
+  }
+  
+  const elapsed = (new Date() - startTime) / 1000;
+  Logger.log(`✅ [MS Cards] Готово! ${output.length - 1} товаров за ${Math.round(elapsed)} сек. (кэш поставщиков: ${supplierCache.size})`);
+}
