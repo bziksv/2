@@ -1,0 +1,183 @@
+function highlightVATMismatch() {
+  var startTime = new Date();
+  Logger.log("▶️ Старт: " + startTime.toLocaleString());
+  
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Файл для работы");
+  if (!sheet) { Logger.log("❌ Лист 'Файл для работы' не найден"); return; }
+  
+  // ========== 1. НАХОДИМ КОЛОНКИ ==========
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  var vatCol = -1;              // "НДС"
+  var vatOnProductCol = -1;     // "НДС на товаре или комплекте"
+  var vatOzonCol = -1;          // "НДС Ozon"
+  var vatWBCol = -1;            // "НДС WB"
+  var vatYMCol = -1;            // "НДС YM"
+  
+  var articleOzonCol = -1;      // "Артикул (offer_id) Ozon"
+  var articleWBCol = -1;        // "Артикул продавца WB"
+  var articleYMCol = -1;        // "Артикул YM"
+  
+  for (var i = 0; i < headers.length; i++) {
+    var h = headers[i] ? headers[i].toString().trim() : "";
+    if (h === "НДС") {
+      vatCol = i;
+    } else if (h === "НДС на товаре или комплекте") {
+      vatOnProductCol = i;
+    } else if (h === "НДС Ozon") {
+      vatOzonCol = i;
+    } else if (h === "НДС WB") {
+      vatWBCol = i;
+    } else if (h === "НДС YM") {
+      vatYMCol = i;
+    } else if (h === "Артикул (offer_id) Ozon") {
+      articleOzonCol = i;
+    } else if (h === "Артикул продавца WB") {
+      articleWBCol = i;
+    } else if (h === "Артикул YM") {
+      articleYMCol = i;
+    }
+  }
+  
+  if (vatCol === -1) {
+    Logger.log("❌ Колонка 'НДС' не найдена!");
+    return;
+  }
+  
+  var lastRow = sheet.getLastRow();
+  var startRow = 2;
+  if (lastRow < startRow) {
+    Logger.log("⚠️ Нет данных для проверки");
+    return;
+  }
+  var dataRows = lastRow - startRow + 1;
+  
+  // ========== 2. ЧИТАЕМ ДАННЫЕ ==========
+  var vatValues = sheet.getRange(startRow, vatCol + 1, dataRows, 1).getDisplayValues();
+  
+  var vatOnProductValues = (vatOnProductCol !== -1) ? sheet.getRange(startRow, vatOnProductCol + 1, dataRows, 1).getDisplayValues() : null;
+  var vatOzonValues = (vatOzonCol !== -1) ? sheet.getRange(startRow, vatOzonCol + 1, dataRows, 1).getDisplayValues() : null;
+  var vatWBValues = (vatWBCol !== -1) ? sheet.getRange(startRow, vatWBCol + 1, dataRows, 1).getDisplayValues() : null;
+  var vatYMValues = (vatYMCol !== -1) ? sheet.getRange(startRow, vatYMCol + 1, dataRows, 1).getDisplayValues() : null;
+  
+  var articleOzonValues = (articleOzonCol !== -1) ? sheet.getRange(startRow, articleOzonCol + 1, dataRows, 1).getDisplayValues() : null;
+  var articleWBValues = (articleWBCol !== -1) ? sheet.getRange(startRow, articleWBCol + 1, dataRows, 1).getDisplayValues() : null;
+  var articleYMValues = (articleYMCol !== -1) ? sheet.getRange(startRow, articleYMCol + 1, dataRows, 1).getDisplayValues() : null;
+  
+  // ========== 3. ФУНКЦИЯ НОРМАЛИЗАЦИИ ==========
+  function normalizeVAT(value) {
+    if (value === "" || value === null || value === undefined) return "";
+    var str = String(value).trim().replace(/\s/g, '');
+    
+    str = str.replace('%', '');
+    str = str.replace(',', '.');
+    
+    var num = parseFloat(str);
+    if (!isNaN(num)) {
+      if (num === Math.floor(num)) {
+        return num.toString();
+      }
+      return num.toString();
+    }
+    
+    var lowerStr = str.toLowerCase();
+    if (lowerStr === "без ндс" || lowerStr === "безндс" || lowerStr === "0") {
+      return "Без НДС";
+    }
+    
+    return str;
+  }
+  
+  // ========== 4. ПОДГОТАВЛИВАЕМ МАССИВЫ ДЛЯ ФОНОВ ==========
+  var lightOrange = "#ffe6b3";
+  var mismatchCount = 0;
+  
+  var bgOnProduct = new Array(dataRows);
+  var bgOzon = new Array(dataRows);
+  var bgWB = new Array(dataRows);
+  var bgYM = new Array(dataRows);
+  
+  for (var r = 0; r < dataRows; r++) {
+    bgOnProduct[r] = null;
+    bgOzon[r] = null;
+    bgWB[r] = null;
+    bgYM[r] = null;
+  }
+  
+  // ========== 5. ЗАПОЛНЯЕМ МАССИВЫ ==========
+  for (var r = 0; r < dataRows; r++) {
+    var baseNorm = normalizeVAT(vatValues[r][0]);
+    
+    // "НДС на товаре или комплекте" - просто сравниваем с НДС
+    if (vatOnProductCol !== -1 && vatOnProductValues) {
+      var onProductNorm = normalizeVAT(vatOnProductValues[r][0]);
+      if (onProductNorm !== baseNorm) {
+        bgOnProduct[r] = lightOrange;
+        mismatchCount++;
+      }
+    }
+    
+    // "НДС Ozon" - закрашиваем если есть артикул И (значение отличается от НДС ИЛИ пустое)
+    if (vatOzonCol !== -1 && vatOzonValues && articleOzonValues) {
+      var articleOzon = articleOzonValues[r][0];
+      var hasArticle = (articleOzon !== "" && articleOzon !== null);
+      
+      if (hasArticle) {
+        var ozonNorm = normalizeVAT(vatOzonValues[r][0]);
+        if (ozonNorm !== baseNorm) {
+          bgOzon[r] = lightOrange;
+          mismatchCount++;
+        }
+      }
+    }
+    
+    // "НДС WB" - закрашиваем если есть артикул И (значение отличается от НДС ИЛИ пустое)
+    if (vatWBCol !== -1 && vatWBValues && articleWBValues) {
+      var articleWB = articleWBValues[r][0];
+      var hasArticle = (articleWB !== "" && articleWB !== null);
+      
+      if (hasArticle) {
+        var wbNorm = normalizeVAT(vatWBValues[r][0]);
+        if (wbNorm !== baseNorm) {
+          bgWB[r] = lightOrange;
+          mismatchCount++;
+        }
+      }
+    }
+    
+    // "НДС YM" - закрашиваем если есть артикул И (значение отличается от НДС ИЛИ пустое)
+    if (vatYMCol !== -1 && vatYMValues && articleYMValues) {
+      var articleYM = articleYMValues[r][0];
+      var hasArticle = (articleYM !== "" && articleYM !== null);
+      
+      if (hasArticle) {
+        var ymNorm = normalizeVAT(vatYMValues[r][0]);
+        if (ymNorm !== baseNorm) {
+          bgYM[r] = lightOrange;
+          mismatchCount++;
+        }
+      }
+    }
+  }
+  
+  // ========== 6. ПРИМЕНЯЕМ ФОНЫ ==========
+  if (vatOnProductCol !== -1) {
+    var bgOnProductArray = bgOnProduct.map(function(b) { return [b]; });
+    sheet.getRange(startRow, vatOnProductCol + 1, dataRows, 1).setBackgrounds(bgOnProductArray);
+  }
+  if (vatOzonCol !== -1) {
+    var bgOzonArray = bgOzon.map(function(b) { return [b]; });
+    sheet.getRange(startRow, vatOzonCol + 1, dataRows, 1).setBackgrounds(bgOzonArray);
+  }
+  if (vatWBCol !== -1) {
+    var bgWBArray = bgWB.map(function(b) { return [b]; });
+    sheet.getRange(startRow, vatWBCol + 1, dataRows, 1).setBackgrounds(bgWBArray);
+  }
+  if (vatYMCol !== -1) {
+    var bgYMArray = bgYM.map(function(b) { return [b]; });
+    sheet.getRange(startRow, vatYMCol + 1, dataRows, 1).setBackgrounds(bgYMArray);
+  }
+  
+  Logger.log("📊 Найдено несовпадений НДС: " + mismatchCount);
+  Logger.log("🎉 Готово за " + ((new Date() - startTime) / 1000).toFixed(2) + " сек.");
+}
