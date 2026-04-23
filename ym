@@ -1,0 +1,212 @@
+function exportYandexMarket() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(YM_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(YM_SHEET_NAME);
+  else sheet.clearContents();
+
+  const timestamp = Utilities.formatDate(new Date(), "Europe/Moscow", "dd.MM.yyyy HH:mm");
+  Logger.log(`🕐 Обновление: ${timestamp}`);
+  
+  const headers = { "Api-Key": YM_API_KEY };
+  
+  // 🔹 ШАГ 1: Получаем список всех SKU из /offer-prices
+  Logger.log("🔵 [Яндекс] 1/3 Получаем список товаров...");
+  
+  let allSkus = [];
+  let pageToken = "";
+  
+  do {
+    let url = `https://api.partner.market.yandex.ru/v2/campaigns/${YM_CAMPAIGN_ID}/offer-prices?limit=500`;
+    if (pageToken) url += `&page_token=${pageToken}`;
+    
+    const response = UrlFetchApp.fetch(url, {
+      method: "get",
+      muteHttpExceptions: true,
+      headers: headers
+    });
+    
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`❌ Ошибка /offer-prices: ${response.getContentText()}`);
+      break;
+    }
+    
+    const data = JSON.parse(response.getContentText());
+    const offers = data.result?.offers || [];
+    
+    for (const offer of offers) {
+      // Исправлено: используем offer.id, а не offer.offerId
+      if (offer.id) {
+        allSkus.push(offer.id);
+      }
+    }
+    
+    pageToken = data.result?.paging?.nextPageToken || "";
+    if (pageToken) Utilities.sleep(200);
+    
+  } while (pageToken !== "");
+  
+  Logger.log(`📦 Найдено товаров: ${allSkus.length}`);
+  
+  if (allSkus.length === 0) {
+    sheet.getRange("A1").setValue("Нет товаров");
+    return;
+  }
+  
+  let skusToProcess = allSkus;
+  if (YM_MAX_ITEMS > 0 && skusToProcess.length > YM_MAX_ITEMS) {
+    skusToProcess = skusToProcess.slice(0, YM_MAX_ITEMS);
+  }
+  
+  // 🔹 ШАГ 2: Получаем цены и НДС для всех товаров
+  Logger.log("🔵 [Яндекс] 2/3 Получаем цены и НДС...");
+  
+  const pricesMap = new Map(); // offerId -> { price, vat }
+  
+  for (let i = 0; i < skusToProcess.length; i += 500) {
+    const chunk = skusToProcess.slice(i, i + 500);
+    
+    const pricesResponse = UrlFetchApp.fetch(
+      `https://api.partner.market.yandex.ru/v2/campaigns/${YM_CAMPAIGN_ID}/offer-prices`,
+      {
+        method: "post",
+        contentType: "application/json",
+        muteHttpExceptions: true,
+        headers: headers,
+        payload: JSON.stringify({ offerIds: chunk })
+      }
+    );
+    
+    if (pricesResponse.getResponseCode() === 200) {
+      const pricesData = JSON.parse(pricesResponse.getContentText());
+      const offers = pricesData.result?.offers || [];
+      
+      for (const offer of offers) {
+        if (offer.offerId) {
+          let vatText = "";
+          switch(offer.price?.vat) {
+            case 2: vatText = "10%"; break;
+            case 5: vatText = "0%"; break;
+            case 6: vatText = "без НДС"; break;
+            case 7: vatText = "20%"; break;
+            case 10: vatText = "5% (УСН)"; break;
+            case 11: vatText = "7% (УСН)"; break;
+            case 14: vatText = "22%"; break;
+            default: vatText = "не указан";
+          }
+          
+          pricesMap.set(String(offer.offerId), {
+            price: offer.price?.value || 0,
+            vat: vatText
+          });
+        }
+      }
+    }
+    
+    Utilities.sleep(200);
+  }
+  
+  Logger.log(`💰 Загружено цен: ${pricesMap.size}`);
+  
+  // 🔹 ШАГ 3: Получаем остатки, названия, размеры и вес
+  Logger.log("🔵 [Яндекс] 3/3 Получаем остатки, размеры и названия...");
+  
+  // Порядок колонок: Артикул | Наименование | Цена | НДС | Остаток | Длина | Ширина | Высота | Вес | Кабинет | Покупателю | Обновлено
+  const output = [["Артикул", "Наименование", "Цена", "НДС", "Остаток", 
+                   "Длина (см)", "Ширина (см)", "Высота (см)", "Вес (кг)",
+                   "Кабинет", "Покупателю", "Обновлено"]];
+  
+  let processed = 0;
+  
+  for (let i = 0; i < skusToProcess.length; i += 100) {
+    const chunk = skusToProcess.slice(i, i + 100);
+    
+    const statsResponse = UrlFetchApp.fetch(
+      `https://api.partner.market.yandex.ru/v2/campaigns/${YM_CAMPAIGN_ID}/stats/skus`, 
+      {
+        method: "post", 
+        contentType: "application/json", 
+        muteHttpExceptions: true,
+        headers: headers, 
+        payload: JSON.stringify({ shopSkus: chunk })
+      }
+    );
+    
+    if (statsResponse.getResponseCode() !== 200) {
+      Logger.log(`⚠️ Ошибка stats: ${statsResponse.getContentText()}`);
+      continue;
+    }
+    
+    const statsData = JSON.parse(statsResponse.getContentText());
+    const goods = statsData.result?.shopSkus || [];
+    
+    for (const good of goods) {
+      const offerId = String(good.shopSku);
+      const priceInfo = pricesMap.get(offerId) || { price: 0, vat: "не указан" };
+      
+      // Остаток (только FIT)
+      let totalStock = 0;
+      if (good.warehouses) {
+        for (const wh of good.warehouses) {
+          if (wh.stocks) {
+            for (const stock of wh.stocks) {
+              if (stock.type === "FIT") totalStock += stock.count || 0;
+            }
+          }
+        }
+      }
+      
+      // Размеры и вес (из weightDimensions)
+      const dims = good.weightDimensions || {};
+      const length = dims.length || 0;
+      const width = dims.width || 0;
+      const height = dims.height || 0;
+      const weight = dims.weight || 0;
+      
+      // Ссылки
+      const buyerLink = good.marketSku 
+        ? `=HYPERLINK("https://market.yandex.ru/product/${good.marketSku}?businessId=${YM_BUSINESS_ID}"; "🛒 Покупателю")` 
+        : "";
+      
+      const sellerLink = `=HYPERLINK("https://partner.market.yandex.ru/supplier/${YM_CAMPAIGN_ID}/assortment/offer-card?article=${offerId}&source=businessAssortment"; "📝 Кабинет")`;
+      
+      output.push([
+        offerId,
+        good.name || "",
+        priceInfo.price ? Math.round(priceInfo.price).toLocaleString('ru-RU') + " ₽" : "0 ₽",
+        priceInfo.vat,
+        totalStock,
+        length,
+        width,
+        height,
+        weight,
+        sellerLink,
+        buyerLink,
+        timestamp
+      ]);
+      
+      processed++;
+      if (processed % 100 === 0) {
+        Logger.log(`📊 Обработано ${processed} из ${skusToProcess.length} товаров`);
+      }
+    }
+    
+    Utilities.sleep(300);
+  }
+  
+  // Запись в таблицу (12 колонок)
+  sheet.getRange(1, 1, output.length, 12).setValues(output);
+  sheet.getRange(1, 1, 1, 12).setFontWeight("bold").setBackground("#f1f3f4");
+  sheet.setFrozenRows(1);
+  
+  // Ширина колонок
+  const widths = [150, 350, 100, 80, 80, 80, 80, 80, 80, 110, 110, 140];
+  widths.forEach((w, i) => sheet.setColumnWidth(i + 1, w));
+  
+  // Форматы чисел
+  if (output.length > 1) {
+    sheet.getRange(2, 5, output.length - 1, 1).setNumberFormat("0"); // Остаток
+    sheet.getRange(2, 6, output.length - 1, 4).setNumberFormat("0.00"); // Размеры и вес
+  }
+  
+  Logger.log(`✅ [Яндекс] Готово! ${output.length - 1} товаров`);
+}
