@@ -1,0 +1,31 @@
+// ==================== ПОЛНАЯ СИНХРОНИЗАЦИЯ Без уведомлений в чат====================
+function ZapuskPolnoYSinchronizacii_1() {
+  Logger.log("🚀 СТАРТ ПОЛНОЙ СИНХРОНИЗАЦИИ ЭТАП-1");
+  
+  try {
+    Logger.log("🚀 Шаг 1: clearWorkSheet()");
+    clearWorkSheet();
+    
+    Logger.log("🚀 Шаг 2: copyAllColumnsToFileForWork()");
+    copyAllColumnsToFileForWork();
+    
+    Logger.log("🚀 Шаг 3: copyColumnsFromHucksterAdvanced()");
+    copyColumnsFromHucksterAdvanced();
+    
+    Logger.log("🚀 Шаг 4: copyFrom_Huckster_Export_RRC()");
+    copyFrom_Huckster_Export_RRC();
+    
+    Logger.log("🚀 Шаг 5: syncOzonDirect()");
+    syncOzonDirect();
+    
+    Logger.log("🚀 Шаг 6: syncWBDirect()");
+    syncWBDirect();
+    
+    
+    Logger.log("✅ ПОЛНАЯ СИНХРОНИЗАЦИЯ ЭТАП 1 ЗАВЕРШЕНА УСПЕШНО");
+    
+  } catch(e) {
+    Logger.log("❌ ОШИБКА: " + e.message);
+    Logger.log("❌ Стек: " + e.stack);
+  }
+}
