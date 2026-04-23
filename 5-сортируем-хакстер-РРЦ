@@ -1,0 +1,208 @@
+function syncVWXbyMatch() {
+  var startTime = new Date();
+  Logger.log("▶️ Старт: " + startTime.toLocaleString());
+  
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Файл для работы");
+  if (!sheet) { Logger.log("❌ Лист не найден"); return; }
+  
+  // ========== 1. НАХОДИМ КОЛОНКИ ПО НАЗВАНИЯМ ==========
+  var headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  var colV = null; // Huckster_Ozon_РРЦ
+  var colW = null; // Huckster_WB_РРЦ
+  var colX = null; // Huckster_YM_РРЦ
+  
+  for (var i = 0; i < headerRow.length; i++) {
+    var header = headerRow[i] ? headerRow[i].toString() : "";
+    if (header === "Huckster_Ozon_РРЦ") {
+      colV = i + 1;
+      Logger.log("📍 Найдена колонка 'Huckster_Ozon_РРЦ' → " + colV);
+    } else if (header === "Huckster_WB_РРЦ") {
+      colW = i + 1;
+      Logger.log("📍 Найдена колонка 'Huckster_WB_РРЦ' → " + colW);
+    } else if (header === "Huckster_YM_РРЦ") {
+      colX = i + 1;
+      Logger.log("📍 Найдена колонка 'Huckster_YM_РРЦ' → " + colX);
+    }
+  }
+  
+  // Проверяем, что все колонки найдены
+  if (!colV || !colW || !colX) {
+    Logger.log("❌ Не найдены все колонки Huckster_РРЦ!");
+    if (!colV) Logger.log("   - Huckster_Ozon_РРЦ не найдена");
+    if (!colW) Logger.log("   - Huckster_WB_РРЦ не найдена");
+    if (!colX) Logger.log("   - Huckster_YM_РРЦ не найдена");
+    return;
+  }
+  
+  var lastRow = sheet.getLastRow();
+  var startRow = 2; // Данные начинаются со 2-й строки
+  if (lastRow < startRow) { Logger.log("⚠️ Нет данных"); return; }
+  
+  var dataRows = lastRow - startRow + 1;
+  
+  // Читаем ВСЕ нужные данные один раз
+  var aVals = sheet.getRange(startRow, 1, dataRows, 1).getValues();
+  var vVals = sheet.getRange(startRow, colV, dataRows, 1).getValues();
+  var wVals = sheet.getRange(startRow, colW, dataRows, 1).getValues();
+  var xVals = sheet.getRange(startRow, colX, dataRows, 1).getValues();
+  
+  // ШАГ 1: Создаем карту "значение -> строка, где оно должно быть (по A)"
+  var targetRowMap = new Map();
+  for (var i = 0; i < dataRows; i++) {
+    var aVal = aVals[i][0];
+    var aStr = (aVal !== "" && aVal !== null) ? String(aVal).trim() : "";
+    if (aStr !== "") {
+      targetRowMap.set(aStr, i);
+    }
+  }
+  Logger.log("🗺️ Карта целевых строк: " + targetRowMap.size + " уникальных значений");
+  
+  // ШАГ 2: Создаем массивы для новых значений
+  var newV = new Array(dataRows);
+  var newW = new Array(dataRows);
+  var newX = new Array(dataRows);
+  var bgV = new Array(dataRows);
+  var bgW = new Array(dataRows);
+  var bgX = new Array(dataRows);
+  
+  // Инициализируем пустыми значениями
+  for (var i = 0; i < dataRows; i++) {
+    newV[i] = "";
+    newW[i] = "";
+    newX[i] = "";
+    bgV[i] = null;
+    bgW[i] = null;
+    bgX[i] = null;
+  }
+  
+  // ШАГ 3: Собираем ВСЕ значения из V, W, X и решаем, куда их переместить
+  var movedV = 0, movedW = 0, movedX = 0;
+  var notFoundV = 0, notFoundW = 0, notFoundX = 0;
+  
+  // Обработка колонки Huckster_Ozon_РРЦ
+  for (var i = 0; i < dataRows; i++) {
+    var val = vVals[i][0];
+    var valStr = (val !== "" && val !== null) ? String(val).trim() : "";
+    if (valStr === "") continue;
+    
+    var targetIdx = targetRowMap.get(valStr);
+    if (targetIdx !== undefined) {
+      if (newV[targetIdx] === "") {
+        newV[targetIdx] = val;
+        movedV++;
+        Logger.log("Huckster_Ozon_РРЦ: значение '" + valStr + "' из строки " + (startRow + i) + " → в строку " + (startRow + targetIdx));
+      }
+    } else {
+      if (newV[i] === "") {
+        newV[i] = val;
+        notFoundV++;
+        Logger.log("Huckster_Ozon_РРЦ: значение '" + valStr + "' в строке " + (startRow + i) + " НЕ НАЙДЕНО в A, оставлено");
+      }
+    }
+  }
+  
+  // Обработка колонки Huckster_WB_РРЦ
+  for (var i = 0; i < dataRows; i++) {
+    var val = wVals[i][0];
+    var valStr = (val !== "" && val !== null) ? String(val).trim() : "";
+    if (valStr === "") continue;
+    
+    var targetIdx = targetRowMap.get(valStr);
+    if (targetIdx !== undefined) {
+      if (newW[targetIdx] === "") {
+        newW[targetIdx] = val;
+        movedW++;
+        Logger.log("Huckster_WB_РРЦ: значение '" + valStr + "' из строки " + (startRow + i) + " → в строку " + (startRow + targetIdx));
+      }
+    } else {
+      if (newW[i] === "") {
+        newW[i] = val;
+        notFoundW++;
+        Logger.log("Huckster_WB_РРЦ: значение '" + valStr + "' в строке " + (startRow + i) + " НЕ НАЙДЕНО в A, оставлено");
+      }
+    }
+  }
+  
+  // Обработка колонки Huckster_YM_РРЦ
+  for (var i = 0; i < dataRows; i++) {
+    var val = xVals[i][0];
+    var valStr = (val !== "" && val !== null) ? String(val).trim() : "";
+    if (valStr === "") continue;
+    
+    var targetIdx = targetRowMap.get(valStr);
+    if (targetIdx !== undefined) {
+      if (newX[targetIdx] === "") {
+        newX[targetIdx] = val;
+        movedX++;
+        Logger.log("Huckster_YM_РРЦ: значение '" + valStr + "' из строки " + (startRow + i) + " → в строку " + (startRow + targetIdx));
+      }
+    } else {
+      if (newX[i] === "") {
+        newX[i] = val;
+        notFoundX++;
+        Logger.log("Huckster_YM_РРЦ: значение '" + valStr + "' в строке " + (startRow + i) + " НЕ НАЙДЕНО в A, оставлено");
+      }
+    }
+  }
+  
+  // ШАГ 4: Определяем фоны по правилу
+  // Закрашиваем желтым только пустые ячейки, но НЕ если все три пустые
+  for (var i = 0; i < dataRows; i++) {
+    var hasV = (newV[i] !== "" && newV[i] !== null);
+    var hasW = (newW[i] !== "" && newW[i] !== null);
+    var hasX = (newX[i] !== "" && newX[i] !== null);
+    
+    // Если все три пустые → не закрашиваем ничего
+    if (!hasV && !hasW && !hasX) {
+      bgV[i] = null;
+      bgW[i] = null;
+      bgX[i] = null;
+      Logger.log("Строка " + (startRow + i) + ": все пустые → без заливки");
+    } else {
+      // Иначе закрашиваем КАЖДУЮ пустую ячейку
+      if (!hasV) {
+        bgV[i] = "#ffff00";
+        Logger.log("Строка " + (startRow + i) + ": Huckster_Ozon_РРЦ пусто → желтый");
+      }
+      if (!hasW) {
+        bgW[i] = "#ffff00";
+        Logger.log("Строка " + (startRow + i) + ": Huckster_WB_РРЦ пусто → желтый");
+      }
+      if (!hasX) {
+        bgX[i] = "#ffff00";
+        Logger.log("Строка " + (startRow + i) + ": Huckster_YM_РРЦ пусто → желтый");
+      }
+    }
+  }
+  
+  // Преобразуем массивы в формат для setValues
+  var vOutput = [];
+  var wOutput = [];
+  var xOutput = [];
+  var vBgOutput = [];
+  var wBgOutput = [];
+  var xBgOutput = [];
+  
+  for (var i = 0; i < dataRows; i++) {
+    vOutput.push([newV[i]]);
+    wOutput.push([newW[i]]);
+    xOutput.push([newX[i]]);
+    vBgOutput.push([bgV[i]]);
+    wBgOutput.push([bgW[i]]);
+    xBgOutput.push([bgX[i]]);
+  }
+  
+  // ШАГ 5: Записываем результаты в найденные колонки
+  sheet.getRange(startRow, colV, dataRows, 1).setValues(vOutput).setBackgrounds(vBgOutput);
+  sheet.getRange(startRow, colW, dataRows, 1).setValues(wOutput).setBackgrounds(wBgOutput);
+  sheet.getRange(startRow, colX, dataRows, 1).setValues(xOutput).setBackgrounds(xBgOutput);
+  
+  Logger.log("📊 ИТОГО:");
+  Logger.log("   Huckster_Ozon_РРЦ: перемещено " + movedV + ", не найдено " + notFoundV);
+  Logger.log("   Huckster_WB_РРЦ: перемещено " + movedW + ", не найдено " + notFoundW);
+  Logger.log("   Huckster_YM_РРЦ: перемещено " + movedX + ", не найдено " + notFoundX);
+  
+  var time = ((new Date() - startTime) / 1000).toFixed(2);
+  Logger.log("🎉 Готово за " + time + " сек.");
+}
