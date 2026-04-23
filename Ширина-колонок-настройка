@@ -1,0 +1,143 @@
+function setColumnWidths() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Файл для работы");
+  if (!sheet) { 
+    Logger.log("❌ Лист 'Файл для работы' не найден"); 
+    return; 
+  }
+  
+  // ============================================
+  // НАСТРОЙКИ ШИРИНЫ КОЛОНОК (в пикселях)
+  // ============================================
+  // 📝 ИНСТРУКЦИЯ:
+  // 1. Меняйте числа после двоеточия (это ширина в пикселях)
+  // 2. Стандартная ширина в Google Sheets ~100 пикселей
+  // 3. Все колонки, не указанные в настройках, получат ширину 100px
+  // ============================================
+  
+  var widths = {
+    // === ОСНОВНЫЕ КОЛОНКИ (A - S) ===
+    "A": 70,    // Код товара
+    "B": 250,   // Наименование товара ⭐
+    "C": 70,   // Менеджер
+    "D": 50,   // Тип
+    "E": 50,   // Складская позиция
+    "F": 50,   // Перестали сотрудничать / Не производится
+    "G": 50,    // Остаток
+    "H": 50,    // Дней на складе
+    "I": 100,   // Проработка цены / коммент
+    "J": 50,    // НДС
+    "K": 50,    // НДС на товаре или комплекте
+    "L": 50,    // Закупочная цена
+    "M": 100,   // Поставщик
+    "N": 100,   // Поставщик 2
+    "O": 70,   // Автоматизация цены
+    "P": 100,   // Упаковка товара для склада
+    "Q": 100,   // Упаковка в своей коробке (Д*Ш*В)
+    "R": 100,   // Вес товара
+    "S": 70,   // Обновлено
+    
+    // === КОЛОНКИ HUCKSTER (T - AF) ===
+    "T": 80,    // Huckster_Ozon
+    "U": 80,    // Huckster_WB
+    "V": 80,    // Huckster_YM
+    "W": 80,    // Huckster_Ozon_РРЦ
+    "X": 80,    // Huckster_WB_РРЦ
+    "Y": 80,    // Huckster_YM_РРЦ
+    
+    // === КОЛОНКИ OZON (Z - AN) ===
+    "Z": 100,   // Артикул (offer_id) Ozon
+    "AA": 250,  // Наименование Ozon ⭐
+    "AB": 70,  // Цена Ozon
+    "AC": 70,   // НДС Ozon
+    "AD": 70,  // Статус Ozon
+    "AE": 70,  // Причина блокировки Ozon
+    "AF": 70,   // Остаток Ozon
+    "AG": 70,   // Длина (см) Ozon
+    "AH": 70,   // Ширина (см) Ozon
+    "AI": 70,   // Высота (см) Ozon
+    "AJ": 70,   // Вес (кг) Ozon
+    "AK": 70,  // Кабинет Ozon
+    "AL": 70,  // Покупателю Ozon
+    "AM": 70,  // Обновлено Ozon
+    
+    // === КОЛОНКИ WB (AN - BA) ===
+    "AN": 100,  // Артикул продавца WB
+    "AO": 250,  // Наименование WB ⭐
+    "AP": 70,  // Цена WB
+    "AQ": 70,   // НДС WB
+    "AR": 70,   // Остаток WB
+    "AS": 70,   // Длина (см) WB
+    "AT": 70,   // Ширина (см) WB
+    "AU": 70,   // Высота (см) WB
+    "AV": 70,   // Вес (кг) WB
+    "AW": 70,  // Кабинет WB
+    "AX": 70,  // Покупателю WB
+    "AY": 70,  // Обновлено WB
+    
+    // === КОЛОНКИ YM (AZ - BL) ===
+    "AZ": 100,  // Артикул YM
+    "BA": 250,  // Наименование YM ⭐
+    "BB": 70,  // Цена YM
+    "BC": 70,   // НДС YM
+    "BD": 70,   // Остаток YM
+    "BE": 70,   // Длина (см) YM
+    "BF": 70,   // Ширина (см) YM
+    "BG": 70,   // Высота (см) YM
+    "BH": 70,   // Вес (кг) YM
+    "BI": 70,  // Кабинет YM
+    "BJ": 70,  // Покупателю YM
+    "BK": 70   // Обновлено YM
+  };
+  
+  // Получаем последнюю колонку листа
+  var lastCol = sheet.getLastColumn();
+  
+  // ⚠️ ЗАЩИТА ОТ ПУСТОГО ЛИСТА
+  if (lastCol < 1) {
+    Logger.log("⚠️ Лист пуст, нет колонок для настройки. Пропускаем.");
+    return;
+  }
+  
+  var lastColLetter = columnToLetter(lastCol);
+  Logger.log("📋 Последняя колонка в листе: " + lastColLetter + " (" + lastCol + ")");
+  
+  // Применяем настройки для указанных колонок (только если колонка существует)
+  for (var colLetter in widths) {
+    var colIndex = letterToNumber(colLetter);
+    if (colIndex <= lastCol) {
+      sheet.setColumnWidth(colIndex, widths[colLetter]);
+      Logger.log("📏 Колонка " + colLetter + " → " + widths[colLetter] + "px");
+    }
+  }
+  
+  // Для всех остальных колонок (которые не в настройках) устанавливаем ширину 100px
+  for (var i = 1; i <= lastCol; i++) {
+    var currentLetter = columnToLetter(i);
+    if (!widths[currentLetter]) {
+      sheet.setColumnWidth(i, 100);
+      Logger.log("📏 Колонка " + currentLetter + " (новая) → 100px");
+    }
+  }
+  
+  Logger.log("✅ Ширина колонок успешно установлена!");
+}
+
+// Преобразует букву колонки в номер (A=1, AA=27)
+function letterToNumber(letter) {
+  var result = 0;
+  for (var i = 0; i < letter.length; i++) {
+    result = result * 26 + (letter.charCodeAt(i) - 64);
+  }
+  return result;
+}
+
+// Преобразует номер колонки в букву (1=A, 27=AA)
+function columnToLetter(colNumber) {
+  var letter = '';
+  while (colNumber > 0) {
+    var remainder = (colNumber - 1) % 26;
+    letter = String.fromCharCode(65 + remainder) + letter;
+    colNumber = Math.floor((colNumber - 1) / 26);
+  }
+  return letter;
+}
