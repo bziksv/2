@@ -1,3 +1,4 @@
+// moysklad-получаем-остатки-к-комплектам.gs
 function calculateBundleStocks() {
   const startTime = new Date();
   Logger.log("▶️ [Calculate Bundle Stocks] Старт: " + startTime.toLocaleString());
