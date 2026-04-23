@@ -1,0 +1,179 @@
+// wb_stocks.gs - С ЦЕНАМИ, ОСТАТКАМИ И НДС ИЗ WB_CARDS
+const WB_EXPORT_SHEET = "WB Export";
+
+function updateWbStocks() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(WB_EXPORT_SHEET);
+  if (!sheet) sheet = ss.insertSheet(WB_EXPORT_SHEET);
+  else sheet.clearContents();
+
+  const timestamp = Utilities.formatDate(new Date(), "Europe/Moscow", "dd.MM.yyyy HH:mm");
+  Logger.log(`🕐 [WB Stocks] Обновление: ${timestamp}`);
+  
+  // 1. Получаем карточки из WB_Cards (с НДС)
+  const cardsSheet = ss.getSheetByName("WB_Cards");
+  if (!cardsSheet) {
+    Logger.log("❌ Лист WB_Cards не найден");
+    return;
+  }
+  
+  const cardsData = cardsSheet.getDataRange().getValues();
+  const cardsMap = new Map();
+  const vendorCodeToNmId = new Map();
+  
+  // Ожидаемая структура WB_Cards (после обновления):
+  // 0: nmId
+  // 1: Артикул продавца
+  // 2: Наименование
+  // 3: Статус
+  // 4: НДС          <-- НОВАЯ КОЛОНКА
+  // 5: Причина
+  // 6: Длина (см)
+  // 7: Ширина (см)
+  // 8: Высота (см)
+  // 9: Вес (кг)
+  // 10: Обновлено
+  
+  for (let i = 1; i < cardsData.length; i++) {
+    const row = cardsData[i];
+    const nmId = String(row[0]);
+    const vendorCode = row[1];
+    cardsMap.set(nmId, {
+      vendorCode: vendorCode,
+      title: row[2],
+      vat: row[4] || "не указан",        // НДС из колонки 5 (индекс 4)
+      length: row[6] || "",               // Длина из колонки 7 (индекс 6)
+      width: row[7] || "",                // Ширина из колонки 8 (индекс 7)
+      height: row[8] || "",               // Высота из колонки 9 (индекс 8)
+      weight: row[9] || ""                // Вес из колонки 10 (индекс 9)
+    });
+    if (vendorCode) vendorCodeToNmId.set(String(vendorCode), nmId);
+  }
+  Logger.log(`📦 Всего товаров в WB_Cards: ${cardsMap.size}`);
+  
+  // 2. Получаем ЦЕНЫ
+  Logger.log("🔵 [WB Stocks] Получаем цены...");
+  const priceMap = new Map();
+  let offset = 0;
+  const limit = 1000;
+  let hasMore = true;
+  
+  while (hasMore) {
+    const url = `https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter?limit=${limit}&offset=${offset}`;
+    const response = UrlFetchApp.fetch(url, {
+      method: "get", muteHttpExceptions: true,
+      headers: { "Authorization": WB_API_KEY }
+    });
+    
+    if (response.getResponseCode() !== 200) break;
+    
+    const data = JSON.parse(response.getContentText());
+    const goods = data.data?.listGoods || [];
+    
+    for (const good of goods) {
+      const nmId = String(good.nmID);
+      let priceRub = good.sizes?.[0]?.price || 0;
+      if (priceRub > 0) {
+        priceMap.set(nmId, Math.round(priceRub).toLocaleString('ru-RU') + " ₽");
+      }
+    }
+    
+    if (goods.length < limit) hasMore = false;
+    else offset += limit;
+    Utilities.sleep(600);
+  }
+  Logger.log(`📦 Цены получены для ${priceMap.size} товаров`);
+  
+  // 3. Получаем ОСТАТКИ
+  Logger.log("🔵 [WB Stocks] Получаем остатки...");
+  
+  const warehousesResponse = UrlFetchApp.fetch("https://marketplace-api.wildberries.ru/api/v3/warehouses", {
+    method: "get", muteHttpExceptions: true,
+    headers: { "Authorization": WB_API_KEY }
+  });
+  
+  let warehouses = [];
+  if (warehousesResponse.getResponseCode() === 200) {
+    warehouses = JSON.parse(warehousesResponse.getContentText());
+  } else {
+    warehouses = [{ id: 84250, name: "Альмамед - Воронеж" }];
+  }
+  
+  const stockMap = new Map();
+  const vendorCodes = Array.from(vendorCodeToNmId.keys());
+  
+  for (const warehouse of warehouses) {
+    for (let i = 0; i < vendorCodes.length; i += 100) {
+      const chunk = vendorCodes.slice(i, i + 100);
+      const payload = { skus: chunk };
+      
+      const stocksResponse = UrlFetchApp.fetch(`https://marketplace-api.wildberries.ru/api/v3/stocks/${warehouse.id}`, {
+        method: "post", contentType: "application/json", muteHttpExceptions: true,
+        headers: { "Authorization": WB_API_KEY },
+        payload: JSON.stringify(payload)
+      });
+      
+      if (stocksResponse.getResponseCode() === 200) {
+        const stocksData = JSON.parse(stocksResponse.getContentText());
+        if (stocksData.stocks) {
+          for (const item of stocksData.stocks) {
+            const sku = String(item.sku);
+            const amount = item.amount || 0;
+            const nmId = vendorCodeToNmId.get(sku);
+            if (nmId && amount > 0) {
+              const current = stockMap.get(nmId) || 0;
+              stockMap.set(nmId, current + amount);
+            }
+          }
+        }
+      }
+      Utilities.sleep(200);
+    }
+  }
+  Logger.log(`📦 Остатки получены для ${stockMap.size} товаров`);
+  
+  // 4. Формируем таблицу (С НДС)
+  // Порядок: Артикул | Наименование | Цена | НДС | Остаток | Длина | Ширина | Высота | Вес | Кабинет | Покупателю | Обновлено
+  const output = [["Артикул продавца", "Наименование", "Цена", "НДС", "Остаток", 
+                   "Длина (см)", "Ширина (см)", "Высота (см)", "Вес (кг)", 
+                   "Кабинет", "Покупателю", "Обновлено"]];
+  
+  for (const [nmId, card] of cardsMap) {
+    const price = priceMap.get(nmId) || "";
+    const vat = card.vat;  // НДС из карточки
+    const quantity = stockMap.get(nmId) || 0;
+    const sellerLink = `=HYPERLINK("https://seller.wildberries.ru/new-goods/card?nmID=${nmId}&type=EXIST_CARD"; "📝 Кабинет")`;
+    const buyerLink = `=HYPERLINK("https://www.wildberries.ru/catalog/${nmId}/detail.aspx"; "🛒 Покупателю")`;
+    
+    output.push([
+      card.vendorCode || "",
+      card.title || "",
+      price,
+      vat,
+      quantity,
+      card.length || "",
+      card.width || "",
+      card.height || "",
+      card.weight || "",
+      sellerLink, 
+      buyerLink, 
+      timestamp
+    ]);
+  }
+  
+  // Запись в таблицу (теперь 12 колонок)
+  sheet.getRange(1, 1, output.length, 12).setValues(output);
+  sheet.getRange(1, 1, 1, 12).setFontWeight("bold").setBackground("#f1f3f4");
+  sheet.setFrozenRows(1);
+  
+  // Ширина колонок
+  const widths = [150, 400, 100, 80, 80, 75, 75, 75, 75, 110, 110, 140];
+  widths.forEach((w, i) => sheet.setColumnWidth(i + 1, w));
+  
+  if (output.length > 1) {
+    sheet.getRange(2, 5, output.length - 1, 1).setNumberFormat("0"); // Остаток
+    sheet.getRange(2, 6, output.length - 1, 4).setNumberFormat("0.##"); // Размеры
+  }
+  
+  Logger.log(`✅ [WB Stocks] Готово! Всего: ${cardsMap.size} товаров`);
+}
