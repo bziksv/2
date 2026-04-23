@@ -1,0 +1,12 @@
+/*
+exportMSCards - Выгрузка карточек из МойСклад
+updateMSStocks - Остатки из МойСклад
+exportMSBundlesStructure - Структура комплектов
+calculateBundleStocks - Расчёт остатков комплектов
+exportOzonProducts - Экспорт Ozon
+exportWbCards + updateWbStocks  - Wildberries
+exportYandexMarket - Яндекс Маркет
+runAllExports - Huckster (оба листа)
+updateSummarySheet - Формирование сводки
+sendSummaryToChat - Уведомления в чат
+*/
