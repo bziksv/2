@@ -1,0 +1,167 @@
+// wb_cards.gs - ОБНОВЛЕННАЯ ВЕРСИЯ С НДС ИЗ ХАРАКТЕРИСТИК
+const WB_CARDS_SHEET = "WB_Cards";
+const WB_CARDS_LIMIT = 0; // 0 = все карточки
+
+function exportWbCards() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(WB_CARDS_SHEET);
+  if (!sheet) sheet = ss.insertSheet(WB_CARDS_SHEET);
+  else sheet.clearContents();
+
+  const timestamp = Utilities.formatDate(new Date(), "Europe/Moscow", "dd.MM.yyyy HH:mm");
+  Logger.log(`🕐 [WB Cards] Старт: ${timestamp}`);
+
+  const allCards = [];
+  let cursor = { limit: 100 };
+  let page = 0;
+
+  do {
+    if (WB_CARDS_LIMIT > 0 && allCards.length >= WB_CARDS_LIMIT) {
+      Logger.log(`⏹️ Достигнут лимит: ${WB_CARDS_LIMIT} карточек`);
+      break;
+    }
+
+    const payload = {
+      settings: {
+        sort: { ascending: true },
+        cursor: cursor,
+        filter: { withPhoto: -1 }
+      }
+    };
+
+    const response = UrlFetchApp.fetch("https://content-api.wildberries.ru/content/v2/get/cards/list", {
+      method: "post",
+      contentType: "application/json",
+      muteHttpExceptions: true,
+      headers: { "Authorization": WB_API_KEY },
+      payload: JSON.stringify(payload)
+    });
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`❌ Ошибка: ${response.getContentText()}`);
+      break;
+    }
+
+    const data = JSON.parse(response.getContentText());
+    const cards = data.cards || [];
+    const filtered = cards.filter(card => card.status !== "archive");
+
+    for (const card of filtered) {
+      if (WB_CARDS_LIMIT > 0 && allCards.length >= WB_CARDS_LIMIT) break;
+      allCards.push(card);
+    }
+
+    if (data.cursor && data.cursor.updatedAt && data.cursor.nmID) {
+      cursor = {
+        limit: 100,
+        updatedAt: data.cursor.updatedAt,
+        nmID: data.cursor.nmID
+      };
+    } else {
+      Logger.log(`📋 Последняя страница, курсор не вернулся`);
+      break;
+    }
+
+    page++;
+    Logger.log(`📋 Страница ${page}: +${filtered.length} (всего: ${allCards.length})`);
+
+    if (cards.length < 100) {
+      Logger.log(`✅ Все карточки получены`);
+      break;
+    }
+
+    Utilities.sleep(200);
+  } while (true);
+
+  if (allCards.length === 0) {
+    sheet.getRange("A1").setValue("Нет карточек");
+    return;
+  }
+
+  // Функция для извлечения НДС из характеристик
+  function extractVatFromCharacteristics(characteristics) {
+    if (!characteristics || !Array.isArray(characteristics)) return "не указан";
+    
+    for (const char of characteristics) {
+      // Ищем характеристику "Ставка НДС" по name или id
+      if (char.name === "Ставка НДС" || char.id === 15001405) {
+        const vatValue = char.value?.[0];
+        if (vatValue) {
+          switch(String(vatValue)) {
+            case "0": return "0%";
+            case "5": return "5% (УСН)";
+            case "7": return "7% (УСН)";
+            case "10": return "10%";
+            case "20": return "20%";
+            case "6": return "без НДС";
+            default: return vatValue + "%";
+          }
+        }
+      }
+    }
+    return "не указан";
+  }
+
+  // Формируем таблицу с НДС
+  // Порядок: nmId | Артикул | Наименование | Статус | НДС | Причина | Длина | Ширина | Высота | Вес | Обновлено
+  const output = [["nmId", "Артикул продавца", "Наименование", "Статус", "НДС", "Причина",
+                   "Длина (см)", "Ширина (см)", "Высота (см)", "Вес (кг)", "Обновлено"]];
+
+  for (const card of allCards) {
+    const dims = card.dimensions || {};
+    let weight = dims.weightBrutto || "";
+    if (weight && weight > 1000) weight = weight / 1000;
+
+    // Статус
+    let status = "Активен";
+    const cardStatus = card.status || "";
+    if (cardStatus === "approved" || cardStatus === "published") status = "Продаётся";
+    else if (cardStatus === "moderation") status = "На модерации";
+    else if (cardStatus === "rejected") status = "Отклонён";
+    else if (cardStatus === "disabled") status = "Отключён";
+    else if (cardStatus === "unpublished") status = "Снят с продажи";
+    else if (cardStatus === "archive") status = "В архиве";
+
+    // Причина отклонения
+    let reason = "";
+    if (card.errors && card.errors.length > 0) {
+      reason = card.errors.map(e => e.message || e.human_text?.text || String(e)).join("; ");
+    }
+
+    // 🔥 ПОЛУЧАЕМ НДС ИЗ ХАРАКТЕРИСТИК
+    const vat = extractVatFromCharacteristics(card.characteristics);
+
+    output.push([
+      card.nmID,
+      card.vendorCode || "",
+      card.title || card.subjectName || "",
+      status,
+      vat,
+      reason,
+      dims.length || "",
+      dims.width || "",
+      dims.height || "",
+      weight,
+      timestamp
+    ]);
+  }
+
+  // Запись в таблицу (11 колонок)
+  sheet.getRange(1, 1, output.length, 11).setValues(output);
+  sheet.getRange(1, 1, 1, 11).setFontWeight("bold").setBackground("#f1f3f4");
+  sheet.setFrozenRows(1);
+  
+  // Ширина колонок
+  const widths = [100, 150, 350, 100, 90, 200, 70, 70, 70, 70, 140];
+  widths.forEach((w, i) => sheet.setColumnWidth(i + 1, w));
+
+  Logger.log(`✅ [WB Cards] Готово! ${output.length - 1} карточек`);
+  
+  // Выводим статистику по НДС
+  const vatStats = new Map();
+  for (let i = 1; i < output.length; i++) {
+    const vat = output[i][4];
+    vatStats.set(vat, (vatStats.get(vat) || 0) + 1);
+  }
+  Logger.log(`📊 Статистика по НДС: ${JSON.stringify(Object.fromEntries(vatStats))}`);
+}
