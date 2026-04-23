@@ -1,0 +1,175 @@
+// 🔐 НАСТРОЙКИ — ОБЯЗАТЕЛЬНО СМЕНИТЕ ПАРОЛЬ!
+const HUCKSTER_EMAIL = "sv@almamed.su";
+const HUCKSTER_PASSWORD = "!1qaz2wsx!Q";  // ← СМЕНЯЕМ!
+const MARKETPLACE = "ozon";
+const SHOP_ID = "139080";
+const SHEET_NAME = "Huckster Export";
+
+
+// 📊 ЛИМИТ ЗАГРУЗКИ (offset). 500 = быстро для теста, 10000 = полная выгрузка, 0 = без лимита
+const MAX_OFFSET_PER_SHOP = 15000; 
+
+// 📋 НАБОР 1: Huckster Export
+const SHOPS_SET_1 = [
+  { id: "ozon", name: "Ozon", marketplace: "ozon", shop_id: "139080" },
+  { id: "wb",   name: "WB FBS", marketplace: "wildberries", shop_id: "84250" },
+  { id: "ym",   name: "Альмамед (ЯМ FBS)", marketplace: "yandex", shop_id: "22155238" }
+];
+
+// 📋 НАБОР 2: Huckster Export RRC
+const SHOPS_SET_2 = [
+  { id: "ozon_fbo", name: "Ozon FBO", marketplace: "ozon", shop_id: "139080_FBO" },
+  { id: "wb_fbs",   name: "WB FBW/FBS", marketplace: "wildberries", shop_id: "84250_FBO" },
+  { id: "ym_fbs",   name: "Альмамед (ЯМ FBS) РРЦ", marketplace: "yandex", shop_id: "22155238_2" }
+];
+
+// 📏 Ширина столбцов (px)
+const UID_COL_WIDTH = 85;
+const NAME_COL_WIDTH = 450;
+const SEP_COL_WIDTH = 19; // ~0.5 см
+
+// 🟢 ЗАПУСК ОБОИХ ЛИСТОВ ПОДРЯД
+function runAllExports() {
+  exportHucksterExport();
+  exportHucksterExportRRC();
+  Logger.log("🎉 ОБА ЛИСТА ОБНОВЛЕНЫ!");
+}
+
+// 🟢 ФУНКЦИЯ ДЛЯ ЛИСТА "Huckster Export"
+function exportHucksterExport() { runExport("Huckster Export", SHOPS_SET_1); }
+
+// 🟠 ФУНКЦИЯ ДЛЯ ЛИСТА "Huckster Export RRC"
+function exportHucksterExportRRC() { runExport("Huckster Export RRC", SHOPS_SET_2); }
+
+// ⚙️ ОСНОВНАЯ ЛОГИКА
+function runExport(sheetName, shops) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+
+  try {
+    Logger.log(`🔐 [${sheetName}] Аутентификация...`);
+    const md5 = UrlFetchApp.fetch("https://wbs.e-teleport.ru/md5", {
+      method: "post", contentType: "application/json", muteHttpExceptions: true,
+      payload: JSON.stringify({ input: HUCKSTER_PASSWORD }),
+      headers: { "Accept": "application/json" }
+    }).getContentText().trim().replace(/^"|"$/g, '');
+
+    const authRaw = UrlFetchApp.fetch("https://wbs.e-teleport.ru/auth/credentials", {
+      method: "post", contentType: "application/json", muteHttpExceptions: true,
+      payload: JSON.stringify({ userName: HUCKSTER_EMAIL, password: md5 }),
+      headers: { "Accept": "application/json", "Content-Type": "application/json" }
+    }).getContentText().trim();
+
+    const authData = JSON.parse(authRaw);
+    const sessionId = authData.SessionId;
+    if (!sessionId) throw new Error("Не получен SessionId");
+
+    // 2. Загрузка товаров
+    const shopItems = {};
+    shops.forEach(shop => {
+      try {
+        shopItems[shop.id] = fetchAllProducts(shop, sessionId);
+        Logger.log(`✅ [${sheetName}] ${shop.name}: ${shopItems[shop.id].length} вкл. товаров`);
+      } catch (e) {
+        Logger.log(`⚠️ [${sheetName}] ${shop.name} ошибка: ${e.message}. Пустой.`);
+        shopItems[shop.id] = [];
+      }
+    });
+
+    // 3. Выравнивание по UID
+    const allUids = new Set();
+    Object.values(shopItems).forEach(list => list.forEach(i => allUids.add(i.uid)));
+    const sortedUids = Array.from(allUids).sort();
+
+    const shopMaps = {};
+    shops.forEach(shop => shopMaps[shop.id] = new Map(shopItems[shop.id].map(i => [i.uid, i.name])));
+
+    // 4. Формирование матрицы
+    const output = [];
+    let headerRow = [];
+    shops.forEach((shop, idx) => {
+      if (idx > 0) headerRow.push("");
+      headerRow.push(`UID ${shop.name}`, `Наименование товаров ${shop.name}`);
+    });
+    output.push(headerRow);
+
+    sortedUids.forEach(uid => {
+      let row = [];
+      shops.forEach((shop, idx) => {
+        if (idx > 0) row.push("");
+        const name = shopMaps[shop.id].get(uid);
+        row.push(name ? uid : "", name || "");
+      });
+      output.push(row);
+    });
+
+    // 5. Запись и форматирование
+    sheet.clearContents();
+    if (output.length > 1) {
+      const lastRow = output.length;
+      const totalCols = shops.length * 2 + (shops.length - 1);
+      sheet.getRange(1, 1, lastRow, totalCols).setValues(output);
+
+      // 🟡 Генерация фона (шапка серая, разделители без цвета, пустые жёлтые)
+      const bgColors = [];
+      for (let r = 0; r < lastRow; r++) {
+        const rowColors = [];
+        for (let c = 0; c < totalCols; c++) {
+          if (r === 0) rowColors.push("#f1f3f4");          // Шапка
+          else if (c % 3 === 2) rowColors.push(null);      // Разделители C, F... пропускаем
+          else if (output[r][c] === "") rowColors.push("#ffff00"); // Пустые ячейки
+          else rowColors.push(null);
+        }
+        bgColors.push(rowColors);
+      }
+      sheet.getRange(1, 1, lastRow, totalCols).setBackgrounds(bgColors);
+      sheet.getRange(1, 1, 1, totalCols).setFontWeight("bold");
+      sheet.setFrozenRows(1);
+
+      // 📏 Ширина столбцов
+      const widths = [];
+      shops.forEach((_, idx) => {
+        widths.push(UID_COL_WIDTH, NAME_COL_WIDTH);
+        if (idx < shops.length - 1) widths.push(SEP_COL_WIDTH);
+      });
+      widths.forEach((w, i) => sheet.setColumnWidth(i + 1, w));
+
+      // Отключаем перенос строк в названиях
+      for (let i = 0; i < shops.length; i++) {
+        sheet.getRange(2, i * 3 + 2, lastRow - 1, 1).setWrap(false);
+      }
+    }
+    Logger.log(`🎉 [${sheetName}] ГОТОВО!`);
+  } catch (e) {
+    Logger.log(`💥 [${sheetName}] Критическая ошибка: ${e.toString()}`);
+  }
+}
+
+// 📦 Загрузка с контролем offset
+function fetchAllProducts(shop, sessionId) {
+  const products = [];
+  let offset = 0;
+  const limit = 100;
+
+  while (MAX_OFFSET_PER_SHOP === 0 || offset < MAX_OFFSET_PER_SHOP) {
+    const res = UrlFetchApp.fetch("https://wbs.e-teleport.ru/markets/integrations/repricer/items/list", {
+      method: "post", contentType: "application/json", muteHttpExceptions: true,
+      payload: JSON.stringify({ marketplace: shop.marketplace, shop_id: shop.shop_id, limit, offset }),
+      headers: { "Accept": "application/json", "Content-Type": "application/json", "Cookie": `ss-id=${sessionId}` }
+    });
+    const data = JSON.parse(res.getContentText().trim());
+    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+    
+    const rows = data.result || [];
+    const enabled = rows.filter(p => 
+      p.is_enabled === true || p.enabled === true || p.active === true || p.status === 'enabled'
+    );
+    
+    products.push(...enabled);
+    offset += limit;
+    if (rows.length < limit) break; // Авто-стоп, если товары закончились раньше лимита
+    Utilities.sleep(300);
+  }
+  return products;
+}
