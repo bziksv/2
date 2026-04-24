@@ -1,0 +1,277 @@
+// ============================================================================
+// 🔧 ФУНКЦИИ ДЛЯ ЛИСТА "Габариты" — МАССОВАЯ ОБРАБОТКА
+// ============================================================================
+
+/**
+ * 📐 Разбивает габариты для ВСЕХ строк листа "Габариты"
+ */
+function processAllRows() {
+  _processDimensionsMass(false);
+}
+
+/**
+ * 🆕 Разбивает габариты ТОЛЬКО для пустых ячеек
+ */
+function processMissingOnly() {
+  _processDimensionsMass(true);
+}
+
+/**
+ * 🔧 Внутренняя функция массовой обработки габаритов
+ */
+function _processDimensionsMass(onlyMissing) {
+  const CONFIG = {
+    SHEET_NAME: "Габариты",
+    HEADERS_ROW: 1,
+    SPECIAL_VALUES: ["Стандартная упаковка", "Своя упаковка"],
+    COURIER_KEYWORD: "курьерский пакет",
+    DIM_REGEX: /(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)(?:\s*[xх×*]\s*(\d+(?:[.,]\d+)?))?/i,
+    HEADERS: {
+      INPUT: "!тип упаковки",
+      LENGTH: "!длина (см)",
+      WIDTH: "!ширина (см)",
+      BOX_HEIGHT: "высота (см) коробка",
+      PACK_HEIGHT: "высота (см) пакет",
+      WEIGHT: "!вес (кг)"
+    }
+  };
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) { Logger.log(`❌ Лист "${CONFIG.SHEET_NAME}" не найден`); return; }
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) { Logger.log("⚠️ Нет данных для обработки"); return; }
+
+  const headers = sheet.getRange(CONFIG.HEADERS_ROW, 1, 1, lastCol).getValues()[0];
+  const colMap = {};
+  Object.entries(CONFIG.HEADERS).forEach(([key, name]) => {
+    const target = name.toLowerCase().replace(/\s+/g, " ").trim();
+    headers.forEach((h, i) => {
+      const header = String(h).toLowerCase().replace(/\s+/g, " ").trim();
+      if (header.includes(target)) colMap[key] = i + 1;
+    });
+  });
+
+  if (!colMap.INPUT) { Logger.log("❌ Не найдена колонка '!тип упаковки'"); return; }
+  if (!colMap.LENGTH || !colMap.WIDTH) { Logger.log("❌ Не найдены колонки для габаритов"); return; }
+
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  let processed = 0, updated = 0;
+
+  for (let r = 0; r < data.length; r++) {
+    const rowIdx = r + 2;
+    const rawValue = String(data[r][colMap.INPUT - 1] || "").trim();
+    if (!rawValue) continue;
+
+    if (onlyMissing) {
+      const hasLength = String(data[r][colMap.LENGTH - 1] || "").trim() !== "";
+      const hasWidth = String(data[r][colMap.WIDTH - 1] || "").trim() !== "";
+      if (hasLength && hasWidth) continue;
+    }
+
+    const isCourier = rawValue.toLowerCase().includes(CONFIG.COURIER_KEYWORD);
+    const isSpecial = CONFIG.SPECIAL_VALUES.includes(rawValue);
+    const match = rawValue.match(CONFIG.DIM_REGEX);
+
+    if (match) {
+      if (colMap.LENGTH) sheet.getRange(rowIdx, colMap.LENGTH).setValue(match[1]);
+      if (colMap.WIDTH) sheet.getRange(rowIdx, colMap.WIDTH).setValue(match[2]);
+
+      const thirdDim = match[3] || "";
+      if (isCourier) {
+        if (colMap.PACK_HEIGHT && thirdDim) sheet.getRange(rowIdx, colMap.PACK_HEIGHT).setValue(thirdDim);
+        if (colMap.BOX_HEIGHT) sheet.getRange(rowIdx, colMap.BOX_HEIGHT).clearContent();
+      } else {
+        if (colMap.BOX_HEIGHT && thirdDim) sheet.getRange(rowIdx, colMap.BOX_HEIGHT).setValue(thirdDim);
+        if (colMap.PACK_HEIGHT) sheet.getRange(rowIdx, colMap.PACK_HEIGHT).clearContent();
+      }
+      updated++;
+    }
+    processed++;
+  }
+
+  Logger.log(`✅ Обработано: ${processed} строк | Обновлено: ${updated} записей`);
+}
+
+// ============================================================================
+// 🎨 ПОДСВЕТКА + ЗАПОЛНЕНИЕ !Проблема
+// ============================================================================
+
+/**
+ * 🎨 МАССОВАЯ ПОДСВЕТКА + ЗАПОЛНЕНИЕ !Проблема
+ * Исправлено: теперь обрабатывает ВСЕ строки, даже если !тип упаковки пустой
+ */
+function processAllDimensionHighlights() {
+  const CONFIG = {
+    SHEET_NAME: "Габариты",
+    HEADERS_ROW: 1,
+    HIGHLIGHT_COLOR: "#fff59d",
+    SPECIAL_VALUES: ["Стандартная упаковка", "Своя упаковка"],
+    COURIER_KEYWORD: "курьерский пакет",
+    HEADERS: {
+      INPUT: "!тип упаковки",
+      LENGTH: "!длина (см)",
+      WIDTH: "!ширина (см)",
+      BOX_HEIGHT: "высота (см) коробка",
+      PACK_HEIGHT: "высота (см) пакет",
+      WEIGHT: "!вес (кг)",
+      PROBLEM: "!Проблема"
+    }
+  };
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) { Logger.log(`❌ Лист "${CONFIG.SHEET_NAME}" не найден`); return; }
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) { Logger.log("⚠️ Нет данных для обработки"); return; }
+
+  const headers = sheet.getRange(CONFIG.HEADERS_ROW, 1, 1, lastCol).getValues()[0];
+  const colMap = {};
+  Object.entries(CONFIG.HEADERS).forEach(([key, name]) => {
+    const target = name.toLowerCase().replace(/\s+/g, " ").trim();
+    headers.forEach((h, i) => {
+      const header = String(h).toLowerCase().replace(/\s+/g, " ").trim();
+      if (header.includes(target)) colMap[key] = i + 1;
+    });
+  });
+
+  if (!colMap.INPUT) { Logger.log("❌ Не найдена колонка '!тип упаковки'"); return; }
+
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const bgChanges = {};
+  const problemValues = [];
+  let processed = 0, highlighted = 0, problemsSet = 0;
+
+  for (let r = 0; r < data.length; r++) {
+    const rowIdx = r + 2;
+    const rawValue = String(data[r][colMap.INPUT - 1] || "").trim();
+    
+    let rowHasProblem = false;
+    let isCourier = false;
+    let isSpecial = false;
+    
+    // 🔴 Если !тип упаковки пустой — сразу считаем это проблемой
+    if (!rawValue) {
+      rowHasProblem = true;
+    } else {
+      isCourier = rawValue.toLowerCase().includes(CONFIG.COURIER_KEYWORD);
+      isSpecial = CONFIG.SPECIAL_VALUES.includes(rawValue);
+    }
+
+    // Сброс подсветки
+    [colMap.LENGTH, colMap.WIDTH, colMap.BOX_HEIGHT, colMap.PACK_HEIGHT, colMap.WEIGHT]
+      .filter(c => c).forEach(c => { bgChanges[`${rowIdx}_${c}`] = null; });
+
+    if (isSpecial) {
+      [colMap.LENGTH, colMap.WIDTH, colMap.BOX_HEIGHT, colMap.WEIGHT].forEach(c => {
+        if (c && !String(data[r][c - 1] || "").trim()) {
+          bgChanges[`${rowIdx}_${c}`] = CONFIG.HIGHLIGHT_COLOR;
+          rowHasProblem = true;
+          highlighted++;
+        }
+      });
+    } else {
+      if (colMap.LENGTH && !String(data[r][colMap.LENGTH - 1] || "").trim()) {
+        bgChanges[`${rowIdx}_${colMap.LENGTH}`] = CONFIG.HIGHLIGHT_COLOR;
+        rowHasProblem = true;
+        highlighted++;
+      }
+      if (colMap.WIDTH && !String(data[r][colMap.WIDTH - 1] || "").trim()) {
+        bgChanges[`${rowIdx}_${colMap.WIDTH}`] = CONFIG.HIGHLIGHT_COLOR;
+        rowHasProblem = true;
+        highlighted++;
+      }
+      if (isCourier) {
+        if (colMap.PACK_HEIGHT && !String(data[r][colMap.PACK_HEIGHT - 1] || "").trim()) {
+          bgChanges[`${rowIdx}_${colMap.PACK_HEIGHT}`] = CONFIG.HIGHLIGHT_COLOR;
+          rowHasProblem = true;
+          highlighted++;
+        }
+      } else {
+        if (colMap.BOX_HEIGHT && !String(data[r][colMap.BOX_HEIGHT - 1] || "").trim()) {
+          bgChanges[`${rowIdx}_${colMap.BOX_HEIGHT}`] = CONFIG.HIGHLIGHT_COLOR;
+          rowHasProblem = true;
+          highlighted++;
+        }
+      }
+    }
+    if (colMap.WEIGHT && !String(data[r][colMap.WEIGHT - 1] || "").trim()) {
+      bgChanges[`${rowIdx}_${colMap.WEIGHT}`] = CONFIG.HIGHLIGHT_COLOR;
+      rowHasProblem = true;
+      highlighted++;
+    }
+
+    problemValues.push(rowHasProblem ? ["ДА"] : [""]);
+    if (rowHasProblem) problemsSet++;
+    processed++;
+  }
+
+  // Применяем фоны
+  Object.entries(bgChanges).forEach(([key, color]) => {
+    const [row, col] = key.split('_').map(Number);
+    sheet.getRange(row, col).setBackground(color);
+  });
+
+  // ПАКЕТНАЯ запись в !Проблема
+  if (colMap.PROBLEM && problemValues.length > 0) {
+    sheet.getRange(2, colMap.PROBLEM, problemValues.length, 1).setValues(problemValues);
+  }
+
+  Logger.log(`✅ Обработано: ${processed} строк | Подсвечено: ${highlighted} ячеек | !Проблема: ${problemsSet}`);
+}
+
+// ============================================================================
+// 🧹 ОЧИСТКА
+// ============================================================================
+
+/**
+ * 🧹 Очищает колонку !Проблема
+ */
+function clearAllProblems() {
+  const SHEET_NAME = "Габариты";
+  const PROBLEM_COL = "!Проблема";
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) return;
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const problemIdx = headers.findIndex(h => String(h).trim() === PROBLEM_COL);
+  
+  if (problemIdx === -1) { Logger.log(`⚠️ Колонка "${PROBLEM_COL}" не найдена`); return; }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    sheet.getRange(2, problemIdx + 1, lastRow - 1, 1).clearContent();
+  }
+  Logger.log(`✅ Очищена колонка "${PROBLEM_COL}"`);
+}
+
+/**
+ * 🎨 Очищает всю подсветку (фон) на листе "Габариты"
+ */
+function clearAllHighlights() {
+  const SHEET_NAME = "Габариты";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  
+  if (!sheet) { 
+    Logger.log(`❌ Лист "${SHEET_NAME}" не найден`); 
+    return; 
+  }
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  
+  if (lastRow < 2 || lastCol < 1) { 
+    Logger.log("⚠️ Нет данных для очистки"); 
+    return; 
+  }
+
+  sheet.getRange(2, 1, lastRow - 1, lastCol).setBackground(null);
+  Logger.log(`✅ Очищена подсветка в "${SHEET_NAME}" (${lastRow - 1} строк)`);
+}
