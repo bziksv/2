@@ -1,4 +1,8 @@
-// ========== ОСНОВНАЯ ФУНКЦИЯ ==========
+// ==================== OZON: ВЫГРУЗКА ТОВАРОВ ====================
+// ⚠️ Убедитесь, что в конфиге (config_ozon.gs или начале файла) заданы:
+// OZON_SHEET_NAME, OZON_TIMEZONE, OZON_MAX_ITEMS, OZON_INCLUDE_ARCHIVED,
+// OZON_BATCH_SIZE, OZON_REQUEST_DELAY_MS, OZON_CLIENT_ID, OZON_API_KEY
+
 function exportOzonProducts() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(OZON_SHEET_NAME);
@@ -8,7 +12,7 @@ function exportOzonProducts() {
   const updateTimestamp = Utilities.formatDate(new Date(), OZON_TIMEZONE, "dd.MM.yyyy HH:mm");
   Logger.log(`🕐 Обновление: ${updateTimestamp}`);
   
-  // 1. Получаем список товаров
+  // ========== 1. ПОЛУЧАЕМ СПИСОК ТОВАРОВ ==========
   Logger.log("🔵 [Ozon] 1/3 Список товаров...");
   const basicItems = [];
   let last_id = "";
@@ -27,7 +31,7 @@ function exportOzonProducts() {
       })
     });
     
-    const data = JSON.parse(response);
+    const data = JSON.parse(response.getContentText());
     const items = data.result?.items || [];
     for (const item of items) {
       basicItems.push({ product_id: item.product_id, offer_id: item.offer_id || "" });
@@ -47,7 +51,7 @@ function exportOzonProducts() {
   
   Logger.log(`🔵 [Ozon] Найдено ${basicItems.length} товаров. 2/3 Базовые данные...`);
   
-  // 2. Получаем базовые данные
+  // ========== 2. ПОЛУЧАЕМ БАЗОВЫЕ ДАННЫЕ ==========
   const productDetails = new Map();
   
   for (let i = 0; i < basicItems.length; i += OZON_BATCH_SIZE) {
@@ -60,7 +64,7 @@ function exportOzonProducts() {
       payload: JSON.stringify({ product_id: batch, language: "DEFAULT" })
     });
     
-    const data = JSON.parse(response);
+    const data = JSON.parse(response.getContentText());
     if (data.items) {
       for (const item of data.items) {
         const pid = String(item.id);
@@ -83,6 +87,7 @@ function exportOzonProducts() {
           else vat = String(vatValue);
         }
         
+        // 👇 ИСПРАВЛЕНО: добавили сохранение sku для публичной ссылки
         productDetails.set(pid, {
           name: item.name || "",
           status: status,
@@ -90,6 +95,7 @@ function exportOzonProducts() {
           stocks: stocks,
           price: price,
           vat: vat,
+          sku: item.sku || "",  // ✅ Сохраняем SKU
           length: "", width: "", height: "", weight: ""
         });
       }
@@ -97,7 +103,7 @@ function exportOzonProducts() {
     Utilities.sleep(OZON_REQUEST_DELAY_MS);
   }
   
-  // 3. Получаем габариты (переводим мм в см и сохраняем как ТЕКСТ)
+  // ========== 3. ПОЛУЧАЕМ ГАБАРИТЫ ==========
   Logger.log("📏 [Ozon] 3/3 Получаем габариты...");
   
   for (let i = 0; i < basicItems.length; i += OZON_BATCH_SIZE) {
@@ -110,19 +116,17 @@ function exportOzonProducts() {
       payload: JSON.stringify({ filter: { product_id: batch }, limit: batch.length })
     });
     
-    const data = JSON.parse(response);
+    const data = JSON.parse(response.getContentText());
     if (data.result && Array.isArray(data.result)) {
       for (const product of data.result) {
         const pid = String(product.id);
         const existing = productDetails.get(pid);
         if (existing) {
-          // Получаем значения в СМ
           let lengthCm = product.depth !== undefined ? (product.depth / 10) : null;
           let widthCm = product.width !== undefined ? (product.width / 10) : null;
           let heightCm = product.height !== undefined ? (product.height / 10) : null;
           let weightKg = product.weight !== undefined ? (parseFloat(product.weight) / 1000) : null;
           
-          // СОХРАНЯЕМ КАК ТЕКСТ (чтобы Google Sheets не превращал в даты)
           existing.length = (lengthCm !== null && lengthCm > 0) ? String(lengthCm.toFixed(1)) : "";
           existing.width = (widthCm !== null && widthCm > 0) ? String(widthCm.toFixed(1)) : "";
           existing.height = (heightCm !== null && heightCm > 0) ? String(heightCm.toFixed(1)) : "";
@@ -133,15 +137,21 @@ function exportOzonProducts() {
     Utilities.sleep(OZON_REQUEST_DELAY_MS);
   }
   
-  // 4. Формируем таблицу
-  const headers = ["Артикул (offer_id)", "Наименование", "Цена", "НДС", 
-                   "Статус", "Причина блокировки", "Остаток", 
-                   "Длина (см)", "Ширина (см)", "Высота (см)", "Вес (кг)", 
-                   "Кабинет", "Покупателю", "Обновлено"];
+  // ========== 4. ФОРМИРУЕМ ТАБЛИЦУ ==========
+  const headers = [
+    "Артикул (offer_id)", "Наименование", "Цена", "НДС", 
+    "Статус", "Причина блокировки", "Остаток", 
+    "Длина (см)", "Ширина (см)", "Высота (см)", "Вес (кг)", 
+    "Кабинет", "Покупателю", "Обновлено"
+  ];
   const output = [headers];
   
   for (const item of basicItems) {
     const d = productDetails.get(String(item.product_id)) || {};
+    
+    // 👇 ИСПРАВЛЕНО: ссылка на покупателя через SKU (с фоллбэком на product_id)
+    const productLink = d.sku ? String(d.sku) : String(item.product_id);
+    
     output.push([
       item.offer_id || "", 
       d.name || "", 
@@ -155,12 +165,12 @@ function exportOzonProducts() {
       d.height,
       d.weight,
       `=HYPERLINK("https://seller.ozon.ru/app/products/${item.product_id}/edit/general-info"; "📝 Кабинет")`,
-      `=HYPERLINK("https://www.ozon.ru/product/${item.product_id}"; "🛒 Покупателю")`,
+      `=HYPERLINK("https://www.ozon.ru/product/${productLink}"; "🛒 Покупателю")`, // ✅ ИСПРАВЛЕНО
       updateTimestamp
     ]);
   }
   
-  // Запись в таблицу
+  // ========== 5. ЗАПИСЬ И ФОРМАТИРОВАНИЕ ==========
   sheet.getRange(1, 1, output.length, 14).setValues(output);
   sheet.getRange(1, 1, 1, 14).setFontWeight("bold").setBackground("#f1f3f4");
   sheet.setFrozenRows(1);
