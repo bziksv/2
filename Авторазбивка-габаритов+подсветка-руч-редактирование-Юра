@@ -1,0 +1,149 @@
+/**
+ * Авторазбивка габаритов + подсветка (ИСПРАВЛЕННЫЙ ПРИОРИТЕТ)
+ * 🔴 ПРИОРИТЕТ 1: !Проблема="ДА" + пустой !Тип УПАКОВКИ → красим ВСЁ
+ * 🟡 ПРИОРИТЕТ 2: Обычная логика по типу упаковки
+ */
+function onEdit(e) {
+  try {
+    const CONFIG = {
+      SHEET_NAME: "Габариты",
+      HEADERS_ROW: 1,
+      HIGHLIGHT_COLOR: "#fff59d",
+      SPECIAL_VALUES: ["Стандартная упаковка", "Своя упаковка"],
+      COURIER_KEYWORD: "курьерский пакет",
+      DIM_REGEX: /(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)(?:\s*[xх×*]\s*(\d+(?:[.,]\d+)?))?/i,
+      HEADERS: {
+        INPUT: "!тип упаковки",
+        LENGTH: "!длина (см)",
+        WIDTH: "!ширина (см)",
+        BOX_HEIGHT: "высота (см) коробка",
+        PACK_HEIGHT: "высота (см) пакет",
+        WEIGHT: "!вес (кг)",
+        PROBLEM: "!Проблема"  // ← Добавили для проверки
+      }
+    };
+
+    const sheet = e.range.getSheet();
+    if (sheet.getName() !== CONFIG.SHEET_NAME) return;
+
+    const row = e.range.getRow();
+    if (row === CONFIG.HEADERS_ROW) return;
+
+    // === Нормализация текста ===
+    function normalize(str) {
+      return str.toString().toLowerCase().replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+    }
+
+    // === Получаем заголовки ===
+    const headers = sheet.getRange(CONFIG.HEADERS_ROW, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const colMap = {};
+
+    Object.entries(CONFIG.HEADERS).forEach(([key, name]) => {
+      const target = normalize(name);
+      headers.forEach((h, i) => {
+        const header = normalize(h);
+        if (header.includes(target)) colMap[key] = i + 1;
+      });
+    });
+
+    if (!colMap.INPUT) return;
+
+    const editedCol = e.range.getColumn();
+    const watchedCols = Object.values(colMap);
+    if (!watchedCols.includes(editedCol)) return;
+
+    // === Диапазоны ячеек ===
+    const ranges = {
+      input: sheet.getRange(row, colMap.INPUT),
+      length: sheet.getRange(row, colMap.LENGTH),
+      width: sheet.getRange(row, colMap.WIDTH),
+      boxHeight: sheet.getRange(row, colMap.BOX_HEIGHT),
+      packHeight: sheet.getRange(row, colMap.PACK_HEIGHT),
+      weight: sheet.getRange(row, colMap.WEIGHT),
+      problem: colMap.PROBLEM ? sheet.getRange(row, colMap.PROBLEM) : null
+    };
+
+    const dimRanges = [ranges.length, ranges.width, ranges.boxHeight, ranges.packHeight, ranges.weight];
+    const allHighlightRanges = [ranges.input, ...dimRanges].filter(r => r); // Все 6 колонок
+
+    const rawValue = ranges.input.getDisplayValue().trim();
+    const problemVal = ranges.problem ? ranges.problem.getDisplayValue().trim().toUpperCase() : "";
+    const hasProblem = (problemVal === "ДА");
+
+    // === 🔴 ПРИОРИТЕТ 1: !Проблема="ДА" + пустой !Тип УПАКОВКИ ===
+    if (hasProblem && rawValue === "") {
+      // Красим ВСЕ колонки (включая сам !Тип УПАКОВКИ)
+      allHighlightRanges.forEach(c => c.setBackground(CONFIG.HIGHLIGHT_COLOR));
+      return; // Выходим, остальную логику не выполняем
+    }
+
+    // === Если !Тип УПАКОВКИ пустой (но !Проблема ≠ "ДА") → просто очищаем ===
+    if (!rawValue) {
+      dimRanges.forEach(c => { c.clearContent(); c.setBackground(null); });
+      if (ranges.input) ranges.input.setBackground(null);
+      return;
+    }
+
+    // === Если редактировали НЕ поле ввода → только подсветка ===
+    if (editedCol !== colMap.INPUT) {
+      updateHighlights(ranges, rawValue, CONFIG);
+      return;
+    }
+
+    // === Сброс подсветки перед разбивкой ===
+    allHighlightRanges.forEach(c => c.setBackground(null));
+
+    const isCourier = rawValue.toLowerCase().includes(CONFIG.COURIER_KEYWORD);
+    const isSpecial = CONFIG.SPECIAL_VALUES.includes(rawValue);
+    const match = rawValue.match(CONFIG.DIM_REGEX);
+
+    // === Разбивка габаритов ===
+    if (match) {
+      ranges.length.setValue(match[1]);
+      ranges.width.setValue(match[2]);
+      const thirdDim = match[3] || "";
+      if (isCourier) {
+        ranges.packHeight.setValue(thirdDim);
+        ranges.boxHeight.clearContent();
+      } else {
+        ranges.boxHeight.setValue(thirdDim);
+        ranges.packHeight.clearContent();
+      }
+    } else {
+      [ranges.length, ranges.width, ranges.boxHeight, ranges.packHeight].forEach(c => c.clearContent());
+    }
+
+    // === 🟡 ПРИОРИТЕТ 2: Обычная подсветка по правилам ===
+    updateHighlights(ranges, rawValue, CONFIG);
+
+  } catch (err) {
+    console.error("❌ Ошибка в onEdit:", err);
+  }
+}
+
+/**
+ * Подсветка пустых полей (обычная логика)
+ */
+function updateHighlights(ranges, rawValue, CONFIG) {
+  const isCourier = rawValue.toLowerCase().includes(CONFIG.COURIER_KEYWORD);
+  const isSpecial = CONFIG.SPECIAL_VALUES.includes(rawValue);
+
+  // Сброс подсветки для габаритов
+  [ranges.length, ranges.width, ranges.boxHeight, ranges.packHeight, ranges.weight]
+    .forEach(c => c.setBackground(null));
+
+  if (isSpecial) {
+    [ranges.length, ranges.width, ranges.boxHeight, ranges.weight].forEach(c => {
+      if (!c.getValue()) c.setBackground(CONFIG.HIGHLIGHT_COLOR);
+    });
+  } else {
+    if (!ranges.length.getValue()) ranges.length.setBackground(CONFIG.HIGHLIGHT_COLOR);
+    if (!ranges.width.getValue()) ranges.width.setBackground(CONFIG.HIGHLIGHT_COLOR);
+    if (isCourier) {
+      if (!ranges.packHeight.getValue()) ranges.packHeight.setBackground(CONFIG.HIGHLIGHT_COLOR);
+    } else {
+      if (!ranges.boxHeight.getValue()) ranges.boxHeight.setBackground(CONFIG.HIGHLIGHT_COLOR);
+    }
+  }
+  if (!ranges.weight.getValue()) ranges.weight.setBackground(CONFIG.HIGHLIGHT_COLOR);
+}
