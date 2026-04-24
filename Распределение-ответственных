@@ -1,0 +1,70 @@
+// 👇 НАСТРОЙКА: впишите точно те же имена, что в выпадающем списке
+const EMPLOYEES = [
+  "Вадим Маслов", 
+  "Мария Рязанцева", 
+  "Надежда Бобрешова", 
+  "Анастасия Золототрубова", 
+  "Ольга Каширских"
+];
+
+function assignResponsibles() {
+  const SHEET_NAME = "Новые позиции";
+  const COL_B = 2;
+  const START_ROW = 2; // Пропускаем заголовок
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Лист "' + SHEET_NAME + '" не найден!');
+    return;
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < START_ROW) {
+    SpreadsheetApp.getUi().alert('ℹ️ В таблице нет строк для обработки.');
+    return;
+  }
+
+  // Читаем колонку B одним запросом
+  const range = sheet.getRange(START_ROW, COL_B, lastRow - START_ROW + 1, 1);
+  const values = range.getValues();
+
+  // Находим индексы пустых ячеек
+  const emptyIndices = [];
+  for (let i = 0; i < values.length; i++) {
+    const cell = values[i][0];
+    if (cell === null || cell === undefined || String(cell).trim() === "") {
+      emptyIndices.push(i);
+    }
+  }
+
+  if (emptyIndices.length === 0) {
+    SpreadsheetApp.getUi().alert('✅ Все ячейки уже заполнены!');
+    return;
+  }
+
+  // 🔢 Расчёт: сколько строк получит каждый (подряд)
+  const totalEmpty = emptyIndices.length;
+  const empCount = EMPLOYEES.length;
+  const base = Math.floor(totalEmpty / empCount);
+  const remainder = totalEmpty % empCount;
+
+  let currentPtr = 0;
+  for (let i = 0; i < empCount; i++) {
+    const countForEmp = base + (i < remainder ? 1 : 0); // Первые "остаток" получают на 1 больше
+    
+    for (let j = 0; j < countForEmp; j++) {
+      if (currentPtr < emptyIndices.length) {
+        values[emptyIndices[currentPtr]][0] = EMPLOYEES[i];
+        currentPtr++;
+      }
+    }
+  }
+
+  // Записываем обратно одним запросом
+  range.setValues(values);
+  SpreadsheetApp.flush();
+  
+  SpreadsheetApp.getUi().alert(`✅ Успешно распределено ${totalEmpty} задач.`);
+}
