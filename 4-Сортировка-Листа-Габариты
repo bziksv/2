@@ -1,0 +1,106 @@
+/**
+ * 🔹 СОРТИРОВКА + ВАЛИДАЦИЯ (Строго по ТЗ)
+ * 1. Верхний блок: где !Проблема = "ДА"
+ *    → Сортировка: !Остаток (УБЫВАНИЕ) → !Код (ВОЗРАСТАНИЕ)
+ * 2. Нижний блок: где !Проблема пусто
+ *    → Сортировка: !Код (ВОЗРАСТАНИЕ)
+ * 3. Без разрывов строк между блоками
+ * 4. Восстанавливает выпадающие списки для !Кто замерял и !Тип УПАКОВКИ
+ */
+function sortDimensionsSimple() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Габариты");
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+
+  // 1️⃣ ПОИСК КОЛОНОК (игнорирует !, пробелы, даты в заголовках)
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const clean = s => String(s).toLowerCase().replace(/[^a-zа-яё0-9]/g, "");
+  const findCol = name => headers.findIndex(h => clean(h).includes(clean(name)));
+
+  const codeIdx  = findCol("!Код");
+  const probIdx  = findCol("!Проблема");
+  const stockIdx = findCol("!Остаток");
+  const whoIdx   = findCol("!Кто замерял");
+  const typeIdx  = findCol("!Тип УПАКОВКИ");
+
+  if (codeIdx === -1 || probIdx === -1 || stockIdx === -1) {
+    Logger.log("❌ Не найдены колонки: !Код, !Проблема или !Остаток");
+    return;
+  }
+
+  // 2️⃣ ЧТЕНИЕ И РАЗДЕЛЕНИЕ НА 2 БЛОКА
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const problemRows = []; // !Проблема = "ДА"
+  const normalRows  = []; // !Проблема пусто
+
+  for (const row of data) {
+    const probVal = String(row[probIdx] || "").trim().toUpperCase();
+    if (probVal === "ДА" || probVal === "TRUE" || probVal === "1") {
+      problemRows.push(row);
+    } else {
+      normalRows.push(row);
+    }
+  }
+
+  // Вспомогательные функции
+  const getStock = val => {
+    if (typeof val === "number") return val;
+    const n = parseFloat(String(val || "").replace(",", "."));
+    return isNaN(n) ? 0 : n;
+  };
+
+  const compareCode = (a, b) => {
+    const va = String(a[codeIdx] || "").trim();
+    const vb = String(b[codeIdx] || "").trim();
+    if (!va && !vb) return 0;
+    if (!va) return 1; if (!vb) return -1;
+    const na = parseFloat(va.replace(",", "."));
+    const nb = parseFloat(vb.replace(",", "."));
+    return (!isNaN(na) && !isNaN(nb)) ? na - nb : va.localeCompare(vb, "ru", { numeric: true });
+  };
+
+  // 🔹 3️⃣ СОРТИРОВКА БЛОКА "ДА"
+  // Сначала !Остаток ПО УБЫВАНИЮ (30 → 1), потом !Код ПО ВОЗРАСТАНИЮ
+  problemRows.sort((a, b) => {
+    const sa = getStock(a[stockIdx]);
+    const sb = getStock(b[stockIdx]);
+    if (sb !== sa) return sb - sa; // Остаток DESC
+    return compareCode(a, b);      // Код ASC
+  });
+
+  // 🔹 4️⃣ СОРТИРОВКА ОСТАЛЬНЫХ БЛОКОВ
+  normalRows.sort(compareCode);
+
+  // Склеиваем без пустых строк
+  const finalData = [...problemRows, ...normalRows];
+
+  // 5️⃣ ЗАПИСЬ В ТАБЛИЦУ
+  if (finalData.length > 0) {
+    // Очищаем старые данные и старые правила (чтобы setValues не блокировался)
+    sheet.getRange(2, 1, Math.max(lastRow - 1, finalData.length) + 50, lastCol).clearContent();
+    sheet.getRange(2, 1, finalData.length, lastCol).clearDataValidations();
+    sheet.getRange(2, 1, finalData.length, lastCol).setValues(finalData);
+  }
+  sheet.setFrozenRows(1);
+
+  // 6️⃣ ВОССТАНОВЛЕНИЕ ВЫПАДАЮЩИХ СПИСКОВ
+  const setValidation = (colIdx) => {
+    if (colIdx === -1) return;
+    const unique = [...new Set(finalData.map(r => String(r[colIdx] || "").trim()).filter(v => v))].sort();
+    if (unique.length === 0) return;
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(unique, true)
+      .setAllowInvalid(false)
+      .build();
+    sheet.getRange(2, colIdx + 1, finalData.length + 100, 1).setDataValidation(rule);
+  };
+
+  setValidation(whoIdx);
+  setValidation(typeIdx);
+
+  Logger.log(`✅ Готово! 🔸 Проблемных (с остатком): ${problemRows.length} | ⚪ Остальных: ${normalRows.length}`);
+}
