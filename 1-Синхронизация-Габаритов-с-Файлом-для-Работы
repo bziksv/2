@@ -1,0 +1,374 @@
+/**
+ * 🔄 ПОЛНЫЙ СКРИПТ: Синхронизация + Проблемы + Сортировка + Валидация
+ * ✅ Синхронизирует "Файл для работы" → "Габариты"
+ * ✅ Обновляет остатки и тип из "MS Export"
+ * ✅ Заполняет !Проблема (ДА если пусто или не хватает габаритов)
+ * ✅ Сортирует: Проблемные (остаток ↓, код ↑) → Обычные (код ↑) → Не закупаем (код ↑)
+ * ✅ Восстанавливает выпадающие списки для !Кто замерял и !Тип УПАКОВКИ
+ * ✅ НЕ ТРОГАЕТ значения в !Тип УПАКОВКИ при синхронизации
+ */
+
+// ============================================================================
+// 🔁 ОСНОВНАЯ ФУНКЦИЯ СИНХРОНИЗАЦИИ
+// ============================================================================
+function syncDimensionsToSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const workSheet = ss.getSheetByName("Файл для работы");
+  const targetSheet = ss.getSheetByName("Габариты");
+  
+  if (!workSheet || !targetSheet) {
+    Logger.log("❌ Один из листов не найден");
+    return;
+  }
+  
+  // ========== 1. НАХОДИМ КОЛОНКИ ==========
+  const wHeaders = workSheet.getRange(1, 1, 1, workSheet.getLastColumn()).getValues()[0];
+  const tHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
+  
+  const wCodeIdx = findCol(wHeaders, "Код товара");
+  const wNameIdx = findCol(wHeaders, "Наименование товара");
+  const wTypeIdx = findCol(wHeaders, "Тип");
+  
+  let tCodeIdx = findCol(tHeaders, "!Код");
+  let tNameIdx = findCol(tHeaders, "!Наименование");
+  let tTypeIdx = findCol(tHeaders, "!Тип товара");
+  const tPackageIdx = findCol(tHeaders, "!Тип УПАКОВКИ"); // ← Защита этой колонки
+  
+  if (wCodeIdx === -1 || tCodeIdx === -1) {
+    Logger.log("❌ Не найдены обязательные колонки: 'Код товара' или '!Код'");
+    return;
+  }
+  
+  // Создаём колонки имени/типа если нет (но не в колонку !Тип УПАКОВКИ!)
+  if (tNameIdx === -1) {
+    tNameIdx = targetSheet.getLastColumn();
+    if (tNameIdx === tPackageIdx) tNameIdx++;
+    targetSheet.getRange(1, tNameIdx + 1).setValue("!Наименование");
+  }
+  if (tTypeIdx === -1) {
+    tTypeIdx = targetSheet.getLastColumn();
+    if (tTypeIdx === tPackageIdx || tTypeIdx === tNameIdx) tTypeIdx++;
+    targetSheet.getRange(1, tTypeIdx + 1).setValue("!Тип товара");
+  }
+  
+  // ========== 2. СОХРАНЯЕМ !Тип УПАКОВКИ перед синхронизацией ==========
+  const packageValues = {};
+  if (tPackageIdx !== -1) {
+    const tLastRow = targetSheet.getLastRow();
+    if (tLastRow > 1) {
+      const codes = targetSheet.getRange(2, tCodeIdx + 1, tLastRow - 1, 1).getValues();
+      const packages = targetSheet.getRange(2, tPackageIdx + 1, tLastRow - 1, 1).getValues();
+      for (let i = 0; i < codes.length; i++) {
+        const code = normalize(codes[i][0]);
+        if (code) packageValues[code] = packages[i][0];
+      }
+    }
+  }
+  
+  // ========== 3. ЧИТАЕМ ДАННЫЕ ==========
+  const wLastRow = workSheet.getLastRow();
+  const tLastRow = targetSheet.getLastRow();
+  const wData = wLastRow > 1 ? workSheet.getRange(2, 1, wLastRow - 1, workSheet.getLastColumn()).getValues() : [];
+  const tData = tLastRow > 1 ? targetSheet.getRange(2, 1, tLastRow - 1, targetSheet.getLastColumn()).getValues() : [];
+  
+  const targetMap = new Map();
+  tData.forEach((row, idx) => {
+    const code = normalize(row[tCodeIdx]);
+    if (code) targetMap.set(code, { idx, name: normalize(row[tNameIdx]), type: normalize(row[tTypeIdx]) });
+  });
+  
+  // ========== 4. СРАВНИВАЕМ И РАЗДЕЛЯЕМ ==========
+  const updates = [];
+  const inserts = [];
+  
+  wData.forEach(row => {
+    const code = normalize(row[wCodeIdx]);
+    if (!code) return;
+    const name = normalize(row[wNameIdx]);
+    const type = normalize(row[wTypeIdx]);
+    
+    if (targetMap.has(code)) {
+      const existing = targetMap.get(code);
+      if (existing.name !== name || existing.type !== type) {
+        updates.push({ idx: existing.idx, name, type, code });
+      }
+    } else {
+      inserts.push({ code, name, type });
+    }
+  });
+  
+  // ========== 5. ОБНОВЛЯЕМ СУЩЕСТВУЮЩИЕ ==========
+  if (updates.length > 0) {
+    updates.forEach(u => {
+      targetSheet.getRange(2 + u.idx, tNameIdx + 1).setValue(u.name);
+      targetSheet.getRange(2 + u.idx, tTypeIdx + 1).setValue(u.type);
+    });
+  }
+  
+  // ========== 6. ВСТАВЛЯЕМ НОВЫЕ ==========
+  if (inserts.length > 0) {
+    targetSheet.insertRowsBefore(2, inserts.length);
+    const codes = inserts.map(i => [i.code]);
+    const names = inserts.map(i => [i.name]);
+    const types = inserts.map(i => [i.type]);
+    targetSheet.getRange(2, tCodeIdx + 1, inserts.length, 1).setValues(codes);
+    targetSheet.getRange(2, tNameIdx + 1, inserts.length, 1).setValues(names);
+    targetSheet.getRange(2, tTypeIdx + 1, inserts.length, 1).setValues(types);
+  }
+  
+  // ========== 7. ВОССТАНАВЛИВАЕМ !Тип УПАКОВКИ ==========
+  if (tPackageIdx !== -1 && Object.keys(packageValues).length > 0) {
+    const newLastRow = targetSheet.getLastRow();
+    if (newLastRow > 1) {
+      const newCodes = targetSheet.getRange(2, tCodeIdx + 1, newLastRow - 1, 1).getValues();
+      for (let i = 0; i < newCodes.length; i++) {
+        const code = normalize(newCodes[i][0]);
+        if (code && packageValues[code] !== undefined) {
+          targetSheet.getRange(2 + i, tPackageIdx + 1).setValue(packageValues[code]);
+        }
+      }
+    }
+  }
+  
+  Logger.log(`✅ Синхронизация: Обновлено: ${updates.length} | Добавлено: ${inserts.length}`);
+  
+  // ========== 8. ЗАПОЛНЯЕМ !Проблема ==========
+  fillProblemColumn();
+  
+  // ========== 9. СОРТИРУЕМ ==========
+  sortDimensionsSimple();
+  
+  // ========== 10. ВОССТАНАВЛИВАЕМ ВЫПАДАЮЩИЕ СПИСКИ ==========
+  restoreDropdowns();
+  
+  Logger.log("✅ Полный цикл завершён!");
+}
+
+// ============================================================================
+// 🔹 Заполняет колонку !Проблема
+// ============================================================================
+function fillProblemColumn() {
+  const CONFIG = {
+    SHEET_NAME: "Габариты",
+    SPECIAL_VALUES: ["Стандартная упаковка", "Своя упаковка"],
+    COURIER_KEYWORD: "курьерский пакет",
+    HEADERS: {
+      INPUT: "!тип упаковки",
+      LENGTH: "!длина (см)",
+      WIDTH: "!ширина (см)",
+      BOX_HEIGHT: "высота (см) коробка",
+      PACK_HEIGHT: "высота (см) пакет",
+      WEIGHT: "!вес (кг)",
+      PROBLEM: "!Проблема"
+    }
+  };
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const colMap = {};
+  Object.entries(CONFIG.HEADERS).forEach(([key, name]) => {
+    const target = name.toLowerCase().replace(/\s+/g, " ").trim();
+    headers.forEach((h, i) => {
+      const header = String(h).toLowerCase().replace(/\s+/g, " ").trim();
+      if (header.includes(target)) colMap[key] = i + 1;
+    });
+  });
+
+  if (!colMap.INPUT || !colMap.PROBLEM) return;
+
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const problemValues = [];
+
+  for (let r = 0; r < data.length; r++) {
+    const rawValue = String(data[r][colMap.INPUT - 1] || "").trim();
+    let rowHasProblem = false;
+    let isCourier = false;
+    let isSpecial = false;
+    
+    if (!rawValue) {
+      rowHasProblem = true;
+    } else {
+      isCourier = rawValue.toLowerCase().includes(CONFIG.COURIER_KEYWORD);
+      isSpecial = CONFIG.SPECIAL_VALUES.includes(rawValue);
+    }
+
+    if (isSpecial) {
+      [colMap.LENGTH, colMap.WIDTH, colMap.BOX_HEIGHT, colMap.WEIGHT].forEach(c => {
+        if (c && !String(data[r][c - 1] || "").trim()) rowHasProblem = true;
+      });
+    } else {
+      if (colMap.LENGTH && !String(data[r][colMap.LENGTH - 1] || "").trim()) rowHasProblem = true;
+      if (colMap.WIDTH && !String(data[r][colMap.WIDTH - 1] || "").trim()) rowHasProblem = true;
+      if (isCourier) {
+        if (colMap.PACK_HEIGHT && !String(data[r][colMap.PACK_HEIGHT - 1] || "").trim()) rowHasProblem = true;
+      } else {
+        if (colMap.BOX_HEIGHT && !String(data[r][colMap.BOX_HEIGHT - 1] || "").trim()) rowHasProblem = true;
+      }
+    }
+    if (colMap.WEIGHT && !String(data[r][colMap.WEIGHT - 1] || "").trim()) rowHasProblem = true;
+
+    problemValues.push(rowHasProblem ? ["ДА"] : [""]);
+  }
+
+  if (problemValues.length > 0) {
+    sheet.getRange(2, colMap.PROBLEM, problemValues.length, 1).setValues(problemValues);
+  }
+}
+
+// ============================================================================
+// 🔹 Сортировка по ТЗ
+// ============================================================================
+function sortDimensionsSimple() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Габариты");
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const clean = s => String(s).toLowerCase().replace(/[^a-zа-яё0-9]/g, "");
+  const findCol = name => headers.findIndex(h => clean(h).includes(clean(name)));
+
+  const codeIdx = findCol("!Код");
+  const probIdx = findCol("!Проблема");
+  const stockIdx = findCol("!Остаток");
+  const whoIdx = findCol("!Кто замерял");
+  const typeIdx = findCol("!Тип УПАКОВКИ");
+
+  if (codeIdx === -1 || probIdx === -1 || stockIdx === -1) return;
+
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const problemRows = [];
+  const normalRows = [];
+
+  for (const row of data) {
+    const probVal = String(row[probIdx] || "").trim().toUpperCase();
+    if (probVal === "ДА" || probVal === "TRUE" || probVal === "1") {
+      problemRows.push(row);
+    } else {
+      normalRows.push(row);
+    }
+  }
+
+  const getStock = val => {
+    if (typeof val === "number") return val;
+    const n = parseFloat(String(val || "").replace(",", "."));
+    return isNaN(n) ? 0 : n;
+  };
+
+  const compareCode = (a, b) => {
+    const va = String(a[codeIdx] || "").trim();
+    const vb = String(b[codeIdx] || "").trim();
+    if (!va && !vb) return 0;
+    if (!va) return 1; if (!vb) return -1;
+    const na = parseFloat(va.replace(",", "."));
+    const nb = parseFloat(vb.replace(",", "."));
+    return (!isNaN(na) && !isNaN(nb)) ? na - nb : va.localeCompare(vb, "ru", { numeric: true });
+  };
+
+  problemRows.sort((a, b) => {
+    const sa = getStock(a[stockIdx]);
+    const sb = getStock(b[stockIdx]);
+    if (sb !== sa) return sb - sa;
+    return compareCode(a, b);
+  });
+  normalRows.sort(compareCode);
+
+  const finalData = [...problemRows, ...normalRows].map(row => {
+    if (row.length < lastCol) return [...row, ...Array(lastCol - row.length).fill("")];
+    return row;
+  });
+
+  if (finalData.length > 0) {
+    const rowsToClear = Math.max(lastRow - 1, finalData.length) + 10;
+    sheet.getRange(2, 1, rowsToClear, lastCol).clearContent();
+    sheet.getRange(2, 1, finalData.length, lastCol).clearDataValidations();
+    sheet.getRange(2, 1, finalData.length, lastCol).setValues(finalData);
+  }
+  sheet.setFrozenRows(1);
+}
+
+// ============================================================================
+// 🔹 Восстановление выпадающих списков
+// ============================================================================
+function restoreDropdowns() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Габариты");
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const clean = s => String(s).toLowerCase().replace(/[^a-zа-яё0-9]/g, "");
+  const findCol = name => headers.findIndex(h => clean(h).includes(clean(name)));
+
+  const whoIdx = findCol("!Кто замерял");
+  const typeIdx = findCol("!Тип УПАКОВКИ");
+
+  const setValidation = (colIdx) => {
+    if (colIdx === -1) return;
+    const data = sheet.getRange(2, colIdx + 1, lastRow - 1, 1).getValues();
+    const unique = [...new Set(data.map(r => String(r[0] || "").trim()).filter(v => v))].sort();
+    if (unique.length === 0) return;
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(unique, true)
+      .setAllowInvalid(false)
+      .build();
+    sheet.getRange(2, colIdx + 1, lastRow - 1 + 100, 1).setDataValidation(rule);
+  };
+
+  setValidation(whoIdx);
+  setValidation(typeIdx);
+}
+
+// ============================================================================
+// 🔧 Вспомогательные функции
+// ============================================================================
+function findCol(headers, name) {
+  for (let i = 0; i < headers.length; i++) {
+    if (headers[i] && String(headers[i]).trim() === name) return i;
+  }
+  return -1;
+}
+
+function normalize(val) {
+  return val !== null && val !== undefined ? String(val).trim() : "";
+}
+
+// ============================================================================
+// 🧹 ОТДЕЛЬНЫЕ ФУНКЦИИ ДЛЯ МЕНЮ
+// ============================================================================
+function clearAllProblems() {
+  const SHEET_NAME = "Габариты";
+  const PROBLEM_COL = "!Проблема";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const problemIdx = headers.findIndex(h => String(h).trim() === PROBLEM_COL);
+  if (problemIdx === -1) return;
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) sheet.getRange(2, problemIdx + 1, lastRow - 1, 1).clearContent();
+}
+
+function clearAllHighlights() {
+  const SHEET_NAME = "Габариты";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) return;
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return;
+  sheet.getRange(2, 1, lastRow - 1, lastCol).setBackground(null);
+}
