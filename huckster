@@ -1,14 +1,3 @@
-// 🔐 НАСТРОЙКИ — ОБЯЗАТЕЛЬНО СМЕНИТЕ ПАРОЛЬ!
-const HUCKSTER_EMAIL = "sv@almamed.su";
-const HUCKSTER_PASSWORD = "!1qaz2wsx!Q";  // ← СМЕНЯЕМ!
-const MARKETPLACE = "ozon";
-const SHOP_ID = "139080";
-const SHEET_NAME = "Huckster Export";
-
-
-// 📊 ЛИМИТ ЗАГРУЗКИ (offset). 500 = быстро для теста, 10000 = полная выгрузка, 0 = без лимита
-const MAX_OFFSET_PER_SHOP = 15000; 
-
 // 📋 НАБОР 1: Huckster Export
 const SHOPS_SET_1 = [
   { id: "ozon", name: "Ozon", marketplace: "ozon", shop_id: "139080" },
